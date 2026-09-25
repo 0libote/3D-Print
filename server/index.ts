@@ -19,6 +19,16 @@ CREATE TABLE IF NOT EXISTS order_items (id INTEGER PRIMARY KEY, order_id INTEGER
 `);
 if (!db.query("PRAGMA table_info(users)").all().some((column: any) => column.name === "is_admin")) db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0");
 if (db.query("SELECT id FROM users LIMIT 1").get() && !db.query("SELECT id FROM users WHERE is_admin=1 LIMIT 1").get()) db.exec("UPDATE users SET is_admin=1 WHERE id=(SELECT MIN(id) FROM users)");
+if (!db.query("PRAGMA table_info(orders)").all().some((column: any) => column.name === "is_draft")) {
+  db.exec("ALTER TABLE orders ADD COLUMN is_draft INTEGER NOT NULL DEFAULT 0");
+}
+if (!db.query("PRAGMA table_info(orders)").all().some((column: any) => column.name === "confirmed_at")) {
+  db.exec("ALTER TABLE orders ADD COLUMN confirmed_at TEXT");
+}
+if (!db.query("PRAGMA table_info(order_items)").all().some((column: any) => column.name === "status")) {
+  db.exec("ALTER TABLE order_items ADD COLUMN status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','printing','printed','shipped'))");
+  db.exec("UPDATE order_items SET status=(SELECT CASE orders.status WHEN 'new' THEN 'queued' ELSE orders.status END FROM orders WHERE orders.id=order_items.order_id)");
+}
 type Row = Record<string, any>;
 const all = (sql: string, ...params: any[]) => db.query(sql).all(...params) as Row[];
 const one = (sql: string, ...params: any[]) => db.query(sql).get(...params) as Row | null;
@@ -26,7 +36,7 @@ const run = (sql: string, ...params: any[]) => db.query(sql).run(...params);
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const statuses = ["new", "printing", "printed", "shipped"];
+const itemStatuses = ["queued", "printing", "printed", "shipped"];
 function cookie(req: Request, token: string, maxAge: number) {
   const secure = new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
   return `session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
@@ -63,8 +73,19 @@ function productRows() {
 function orderRows() {
   return all("SELECT * FROM orders ORDER BY id DESC").map(o => ({
     ...o,
+    status: o.is_draft ? "draft" : o.status,
     items: all("SELECT * FROM order_items WHERE order_id=? ORDER BY id", o.id)
   }));
+}
+function updateOrderStatus(orderId: number) {
+  const order = one("SELECT is_draft FROM orders WHERE id=?", orderId);
+  if (!order || order.is_draft) return;
+  const items = all("SELECT status FROM order_items WHERE order_id=?", orderId);
+  let status = "new";
+  if (items.length && items.every(item => item.status === "shipped")) status = "shipped";
+  else if (items.length && items.every(item => item.status === "printed" || item.status === "shipped")) status = "printed";
+  else if (items.some(item => item.status !== "queued")) status = "printing";
+  run("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", status, orderId);
 }
 const mime: Record<string,string> = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css", ".svg":"image/svg+xml", ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".webp":"image/webp", ".ico":"image/x-icon" };
 const port = Number(process.env.PORT || 3000);
@@ -178,14 +199,23 @@ Bun.serve({
       }
       if (path === "/api/orders" && req.method === "POST") {
         const b = await body(req);
-        run("INSERT INTO orders (customer,contact,notes) VALUES (?,?,?)", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes));
-        return json({ ok: true }, 201);
+        const result = run("INSERT INTO orders (customer,contact,notes,is_draft) VALUES (?,?,?,1)", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes));
+        return json({ ok: true, id: Number(result.lastInsertRowid) }, 201);
       }
       const order = path.match(/^\/api\/orders\/(\d+)$/);
       if (order && req.method === "PUT") {
-        const b = await body(req), status = String(b.status);
-        if (!statuses.includes(status)) return bad("Invalid status");
-        run("UPDATE orders SET customer=?,contact=?,notes=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), status, id(order[1]));
+        const b = await body(req);
+        run("UPDATE orders SET customer=?,contact=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), id(order[1]));
+        return json({ ok: true });
+      }
+      const confirm = path.match(/^\/api\/orders\/(\d+)\/confirm$/);
+      if (confirm && req.method === "POST") {
+        const orderId = id(confirm[1]);
+        const existing = one("SELECT is_draft FROM orders WHERE id=?", orderId);
+        if (!existing) return bad("Order not found", 404);
+        if (!existing.is_draft) return bad("This order is already confirmed", 409);
+        if (!one("SELECT id FROM order_items WHERE order_id=? LIMIT 1", orderId)) return bad("Add at least one print item before confirming this sale");
+        run("UPDATE orders SET is_draft=0,confirmed_at=CURRENT_TIMESTAMP,status='new',updated_at=CURRENT_TIMESTAMP WHERE id=?", orderId);
         return json({ ok: true });
       }
       if (order && req.method === "DELETE") { run("DELETE FROM orders WHERE id=?", id(order[1])); return json({ ok: true }); }
@@ -199,9 +229,22 @@ Bun.serve({
         if (filamentId && !filament) return bad("That filament is not offered for this product");
         const quantity = Number(b.quantity);
         if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) return bad("Quantity must be between 1 and 10,000");
-        run("INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price) VALUES (?,?,?,?,?,?,?,?)", orderId, productId, product.name, filamentId, filament?.name ?? "", filament?.color ?? "#adb5bd", quantity, product.price);
+        run("INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price,status) VALUES (?,?,?,?,?,?,?,?,?)", orderId, productId, product.name, filamentId, filament?.name ?? "", filament?.color ?? "#adb5bd", quantity, product.price, "queued");
+        updateOrderStatus(orderId);
         run("UPDATE orders SET updated_at=CURRENT_TIMESTAMP WHERE id=?", orderId);
         return json({ ok: true }, 201);
+      }
+      const itemStatus = path.match(/^\/api\/items\/(\d+)\/status$/);
+      if (itemStatus && req.method === "PUT") {
+        const b = await body(req), status = String(b.status ?? "");
+        if (!itemStatuses.includes(status)) return bad("Invalid print stage");
+        const itemId = id(itemStatus[1]);
+        const existing = one("SELECT order_items.order_id,orders.is_draft FROM order_items JOIN orders ON orders.id=order_items.order_id WHERE order_items.id=?", itemId);
+        if (!existing) return bad("Item not found", 404);
+        if (existing.is_draft) return bad("Confirm the sale before moving print items", 409);
+        run("UPDATE order_items SET status=? WHERE id=?", status, itemId);
+        updateOrderStatus(existing.order_id);
+        return json({ ok: true });
       }
       const item = path.match(/^\/api\/items\/(\d+)$/);
       if (item && req.method === "DELETE") {
@@ -209,6 +252,7 @@ Bun.serve({
         const existing = one("SELECT order_id FROM order_items WHERE id=?", itemId);
         if (!existing) return bad("Item not found", 404);
         run("DELETE FROM order_items WHERE id=?", itemId);
+        updateOrderStatus(existing.order_id);
         run("UPDATE orders SET updated_at=CURRENT_TIMESTAMP WHERE id=?", existing.order_id);
         return json({ ok: true });
       }

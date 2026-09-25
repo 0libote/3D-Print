@@ -33,10 +33,13 @@ The SQLite database and uploaded product images live in the Docker volume `print
 
 1. Add the filaments you own, including a swatch colour.
 2. Add products, upload an example image if you have one, and select the filaments offered for each product.
-3. Create an order and add products with a quantity and optional filament.
-4. Move the order through **New → Printing → Printed → Shipped**.
+3. Create a draft order and add products with a quantity and optional filament.
+4. Confirm the draft sale when it is ready to fulfill. It enters the print queue only after confirmation.
+5. Move each print item through **Queued → Printing → Printed → Shipped** using its stage dropdown. The order status follows its items.
 
-Order items retain their product name, price, filament name and colour when added. Editing or deleting a catalogue entry will not change an existing order. The dashboard shows your active queue and a seven day order chart.
+Order details use a full-page view, and the dedicated print queue shows active items with stage filters. The light/dark preference stays in your browser. Existing orders from older versions remain confirmed sales when the database upgrades; their items inherit the order's former stage.
+
+Order items retain their product name, price, filament name and colour when added. Editing or deleting a catalogue entry will not change an existing order. The dashboard shows your active queue and a seven day sales chart.
 
 The initial version uses GBP for prices. Product images are examples; the swatch shows the chosen filament colour, but does not recolour an uploaded image.
 
