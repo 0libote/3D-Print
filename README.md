@@ -25,7 +25,7 @@ If port 3000 is in use, set `PRINTROOM_PORT`:
 PRINTROOM_PORT=8080 docker compose up -d --build
 ```
 
-The [container workflow](.github/workflows/container.yml) checks pull requests and publishes `ghcr.io/0libote/3d-print:latest` for each push to `main`, plus version tags for `v*` Git tags. It builds for AMD64 and ARM64. GitHub creates a new container package as private by default; after the first publish, the repository owner must change the package visibility to **Public** in its GitHub package settings for anonymous pulls. Until then, local builds work from this public repository.
+The [container workflow](.github/workflows/container.yml) checks pull requests and publishes `ghcr.io/0libote/3d-print:latest` for each push to `main`, plus version tags for `v*` Git tags. It builds for AMD64 and ARM64. The published `latest` image has been verified to pull anonymously.
 
 The SQLite database and uploaded product images live in the Docker volume `printroom_data`. Keep this volume when updating the image. Back up the volume along with the rest of your server data. Put the app behind an HTTPS reverse proxy if accessing it outside your home network.
 
