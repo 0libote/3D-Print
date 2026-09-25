@@ -1,0 +1,11 @@
+services:
+  printroom:
+    image: ghcr.io/0libote/3d-print:latest
+    ports:
+      - "${PRINTROOM_PORT:-3000}:3000"
+    volumes:
+      - printroom_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  printroom_data:

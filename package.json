@@ -1,0 +1,28 @@
+{
+  "name": "printroom",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "server": "bun run server/index.ts",
+    "build": "tsc --noEmit && vite build",
+    "start": "bun run server/index.ts"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "^0.6.0",
+    "@astryxdesign/theme-stone": "^0.6.0",
+    "@stylexjs/stylex": "^0.19.0",
+    "@tanstack/charts": "^0.18.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@stylexjs/unplugin": "^0.19.1",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.0",
+    "vite": "^6.3.0"
+  }
+}

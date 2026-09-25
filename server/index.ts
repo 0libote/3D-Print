@@ -1,0 +1,222 @@
+import { Database } from "bun:sqlite";
+import { mkdirSync, existsSync } from "node:fs";
+import { join, extname, resolve } from "node:path";
+import { randomBytes, createHash } from "node:crypto";
+
+const dataDir = process.env.DATA_DIR || "./data";
+const uploadDir = join(dataDir, "uploads");
+mkdirSync(uploadDir, { recursive: true });
+const db = new Database(join(dataDir, "printroom.sqlite"), { create: true });
+db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS filaments (id INTEGER PRIMARY KEY, name TEXT NOT NULL, brand TEXT NOT NULL DEFAULT '', material TEXT NOT NULL DEFAULT 'PLA', color TEXT NOT NULL DEFAULT '#adb5bd', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', image_url TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS product_filaments (product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, filament_id INTEGER NOT NULL REFERENCES filaments(id) ON DELETE CASCADE, PRIMARY KEY (product_id, filament_id));
+CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, contact TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','printing','printed','shipped')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS order_items (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, product_id INTEGER REFERENCES products(id) ON DELETE SET NULL, product_name TEXT NOT NULL, filament_id INTEGER REFERENCES filaments(id) ON DELETE SET NULL, filament_name TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '#adb5bd', quantity INTEGER NOT NULL CHECK(quantity > 0), unit_price REAL NOT NULL DEFAULT 0);
+`);
+if (!db.query("PRAGMA table_info(users)").all().some((column: any) => column.name === "is_admin")) db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0");
+if (db.query("SELECT id FROM users LIMIT 1").get() && !db.query("SELECT id FROM users WHERE is_admin=1 LIMIT 1").get()) db.exec("UPDATE users SET is_admin=1 WHERE id=(SELECT MIN(id) FROM users)");
+type Row = Record<string, any>;
+const all = (sql: string, ...params: any[]) => db.query(sql).all(...params) as Row[];
+const one = (sql: string, ...params: any[]) => db.query(sql).get(...params) as Row | null;
+const run = (sql: string, ...params: any[]) => db.query(sql).run(...params);
+const json = (value: unknown, status = 200) => Response.json(value, { status });
+const bad = (message: string, status = 400) => json({ error: message }, status);
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const statuses = ["new", "printing", "printed", "shipped"];
+function cookie(req: Request, token: string, maxAge: number) {
+  const secure = new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
+  return `session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+function userFrom(req: Request) {
+  const token = req.headers.get("cookie")?.match(/(?:^|; )session=([^;]+)/)?.[1];
+  if (!token) return null;
+  return one("SELECT users.id, users.name, users.email, users.is_admin FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>datetime('now')", hash(token));
+}
+async function body(req: Request): Promise<Row> {
+  try { return await req.json() as Row; } catch { throw new Error("Invalid JSON body"); }
+}
+function required(value: unknown, label: string, limit = 200) {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > limit) throw new Error(`${label} is required (max ${limit} characters)`);
+  return text;
+}
+function optional(value: unknown, limit = 2000) {
+  const text = String(value ?? "").trim();
+  if (text.length > limit) throw new Error(`Text is too long (max ${limit} characters)`);
+  return text;
+}
+function id(value: string | undefined) {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 1) throw new Error("Invalid ID");
+  return n;
+}
+function productRows() {
+  return all("SELECT * FROM products ORDER BY id DESC").map(p => ({
+    ...p,
+    filament_ids: all("SELECT filament_id FROM product_filaments WHERE product_id=?", p.id).map(r => r.filament_id)
+  }));
+}
+function orderRows() {
+  return all("SELECT * FROM orders ORDER BY id DESC").map(o => ({
+    ...o,
+    items: all("SELECT * FROM order_items WHERE order_id=? ORDER BY id", o.id)
+  }));
+}
+const mime: Record<string,string> = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css", ".svg":"image/svg+xml", ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".webp":"image/webp", ".ico":"image/x-icon" };
+const port = Number(process.env.PORT || 3000);
+Bun.serve({
+  port,
+  async fetch(req) {
+    const url = new URL(req.url);
+    const path = url.pathname;
+    if (!path.startsWith("/api/")) {
+      const root = path.startsWith("/uploads/") ? resolve(uploadDir) : resolve("./dist");
+      const relative = path.startsWith("/uploads/") ? path.slice(9) : path.slice(1);
+      const file = resolve(root, relative || "index.html");
+      if (!file.startsWith(root + "/") && file !== root) return bad("Not found", 404);
+      const selected = existsSync(file) ? file : (root.endsWith("dist") ? join(root, "index.html") : "");
+      if (!selected || !existsSync(selected)) return bad("Not found", 404);
+      return new Response(Bun.file(selected), { headers: { "Content-Type": mime[extname(selected)] || "application/octet-stream" } });
+    }
+    if (req.method !== "GET") {
+      const origin = req.headers.get("origin");
+      if (origin && new URL(origin).host !== url.host) return bad("Invalid request origin", 403);
+    }
+    try {
+      if (path === "/api/bootstrap" && req.method === "GET") {
+        const user = userFrom(req);
+        return json({ needsSetup: !one("SELECT id FROM users LIMIT 1"), user, users: user?.is_admin ? all("SELECT id,name,email,is_admin,created_at FROM users ORDER BY id") : [], filaments: user ? all("SELECT * FROM filaments ORDER BY name") : [], products: user ? productRows() : [], orders: user ? orderRows() : [] });
+      }
+      if (path === "/api/setup" && req.method === "POST") {
+        if (one("SELECT id FROM users LIMIT 1")) return bad("Setup is already complete", 409);
+        const b = await body(req);
+        const name = required(b.name, "Name", 100), email = required(b.email, "Email", 254).toLowerCase();
+        const password = String(b.password ?? "");
+        if (!email.includes("@") || password.length < 10) return bad("Enter a valid email and a password of at least 10 characters");
+        const result = run("INSERT INTO users (name,email,password_hash,is_admin) VALUES (?,?,?,1)", name, email, await Bun.password.hash(password));
+        const token = randomBytes(32).toString("hex");
+        run("INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))", hash(token), result.lastInsertRowid);
+        return new Response(JSON.stringify({ ok: true }), { status: 201, headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, token, 2592000) } });
+      }
+      if (path === "/api/login" && req.method === "POST") {
+        const b = await body(req);
+        const user = one("SELECT * FROM users WHERE email=?", String(b.email ?? "").trim().toLowerCase());
+        if (!user || !await Bun.password.verify(String(b.password ?? ""), user.password_hash)) return bad("Incorrect email or password", 401);
+        const token = randomBytes(32).toString("hex");
+        run("INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))", hash(token), user.id);
+        return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, token, 2592000) } });
+      }
+      if (path === "/api/logout" && req.method === "POST") {
+        const token = req.headers.get("cookie")?.match(/(?:^|; )session=([^;]+)/)?.[1];
+        if (token) run("DELETE FROM sessions WHERE token_hash=?", hash(token));
+        return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, "", 0) } });
+      }
+      const currentUser = userFrom(req);
+      if (!currentUser) return bad("Please sign in", 401);
+      if (path === "/api/users" && req.method === "GET") {
+        if (!currentUser.is_admin) return bad("Admin access required", 403);
+        return json(all("SELECT id,name,email,is_admin,created_at FROM users ORDER BY id"));
+      }
+      if (path === "/api/users" && req.method === "POST") {
+        if (!currentUser.is_admin) return bad("Admin access required", 403);
+        const b = await body(req), email = required(b.email, "Email", 254).toLowerCase(), password = String(b.password ?? "");
+        if (!email.includes("@") || password.length < 10) return bad("Enter a valid email and a password of at least 10 characters");
+        if (one("SELECT id FROM users WHERE email=?", email)) return bad("That email is already in use", 409);
+        run("INSERT INTO users (name,email,password_hash) VALUES (?,?,?)", required(b.name, "Name", 100), email, await Bun.password.hash(password));
+        return json({ ok: true }, 201);
+      }
+      if (path === "/api/filaments" && req.method === "POST") {
+        const b = await body(req);
+        const color = String(b.color ?? "");
+        if (!/^#[0-9a-fA-F]{6}$/.test(color)) return bad("Choose a valid colour");
+        run("INSERT INTO filaments (name,brand,material,color,notes) VALUES (?,?,?,?,?)", required(b.name, "Filament name"), optional(b.brand, 100), required(b.material, "Material", 50), color, optional(b.notes));
+        return json({ ok: true }, 201);
+      }
+      const filament = path.match(/^\/api\/filaments\/(\d+)$/);
+      if (filament && req.method === "PUT") {
+        const b = await body(req), color = String(b.color ?? "");
+        if (!/^#[0-9a-fA-F]{6}$/.test(color)) return bad("Choose a valid colour");
+        run("UPDATE filaments SET name=?,brand=?,material=?,color=?,notes=? WHERE id=?", required(b.name, "Filament name"), optional(b.brand, 100), required(b.material, "Material", 50), color, optional(b.notes), id(filament[1]));
+        return json({ ok: true });
+      }
+      if (filament && req.method === "DELETE") { run("DELETE FROM filaments WHERE id=?", id(filament[1])); return json({ ok: true }); }
+      if (path === "/api/products" && req.method === "POST") {
+        const b = await body(req), price = Number(b.price ?? 0);
+        if (!Number.isFinite(price) || price < 0) return bad("Price must be zero or more");
+        const ids = Array.isArray(b.filament_ids) ? b.filament_ids.map(Number) : [];
+        const tx = db.transaction(() => {
+          const result = run("INSERT INTO products (name,description,image_url,price) VALUES (?,?,?,?)", required(b.name, "Product name"), optional(b.description), optional(b.image_url, 500), price);
+          for (const filamentId of new Set(ids)) run("INSERT INTO product_filaments VALUES (?,?)", result.lastInsertRowid, filamentId);
+        });
+        tx();
+        return json({ ok: true }, 201);
+      }
+      const product = path.match(/^\/api\/products\/(\d+)$/);
+      if (product && req.method === "PUT") {
+        const b = await body(req), price = Number(b.price ?? 0), productId = id(product[1]);
+        if (!Number.isFinite(price) || price < 0) return bad("Price must be zero or more");
+        const ids = Array.isArray(b.filament_ids) ? b.filament_ids.map(Number) : [];
+        db.transaction(() => {
+          run("UPDATE products SET name=?,description=?,image_url=?,price=? WHERE id=?", required(b.name, "Product name"), optional(b.description), optional(b.image_url, 500), price, productId);
+          run("DELETE FROM product_filaments WHERE product_id=?", productId);
+          for (const filamentId of new Set(ids)) run("INSERT INTO product_filaments VALUES (?,?)", productId, filamentId);
+        })();
+        return json({ ok: true });
+      }
+      if (product && req.method === "DELETE") { run("DELETE FROM products WHERE id=?", id(product[1])); return json({ ok: true }); }
+      if (path === "/api/upload" && req.method === "POST") {
+        const form = await req.formData(), file = form.get("file");
+        if (!(file instanceof File) || file.size > 5_000_000 || file.size < 1 || !["image/png","image/jpeg","image/webp"].includes(file.type)) return bad("Upload a PNG, JPEG or WebP image under 5 MB");
+        const extension = { "image/png":".png", "image/jpeg":".jpg", "image/webp":".webp" }[file.type];
+        const filename = randomBytes(16).toString("hex") + extension;
+        await Bun.write(join(uploadDir, filename), file);
+        return json({ url: "/uploads/" + filename }, 201);
+      }
+      if (path === "/api/orders" && req.method === "POST") {
+        const b = await body(req);
+        run("INSERT INTO orders (customer,contact,notes) VALUES (?,?,?)", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes));
+        return json({ ok: true }, 201);
+      }
+      const order = path.match(/^\/api\/orders\/(\d+)$/);
+      if (order && req.method === "PUT") {
+        const b = await body(req), status = String(b.status);
+        if (!statuses.includes(status)) return bad("Invalid status");
+        run("UPDATE orders SET customer=?,contact=?,notes=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), status, id(order[1]));
+        return json({ ok: true });
+      }
+      if (order && req.method === "DELETE") { run("DELETE FROM orders WHERE id=?", id(order[1])); return json({ ok: true }); }
+      const items = path.match(/^\/api\/orders\/(\d+)\/items$/);
+      if (items && req.method === "POST") {
+        const b = await body(req), orderId = id(items[1]), productId = id(String(b.product_id));
+        const product = one("SELECT * FROM products WHERE id=?", productId);
+        if (!product || !one("SELECT id FROM orders WHERE id=?", orderId)) return bad("Order or product not found", 404);
+        const filamentId = b.filament_id ? id(String(b.filament_id)) : null;
+        const filament = filamentId ? one("SELECT f.* FROM filaments f JOIN product_filaments pf ON pf.filament_id=f.id WHERE pf.product_id=? AND f.id=?", productId, filamentId) : null;
+        if (filamentId && !filament) return bad("That filament is not offered for this product");
+        const quantity = Number(b.quantity);
+        if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) return bad("Quantity must be between 1 and 10,000");
+        run("INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price) VALUES (?,?,?,?,?,?,?,?)", orderId, productId, product.name, filamentId, filament?.name ?? "", filament?.color ?? "#adb5bd", quantity, product.price);
+        run("UPDATE orders SET updated_at=CURRENT_TIMESTAMP WHERE id=?", orderId);
+        return json({ ok: true }, 201);
+      }
+      const item = path.match(/^\/api\/items\/(\d+)$/);
+      if (item && req.method === "DELETE") {
+        const itemId = id(item[1]);
+        const existing = one("SELECT order_id FROM order_items WHERE id=?", itemId);
+        if (!existing) return bad("Item not found", 404);
+        run("DELETE FROM order_items WHERE id=?", itemId);
+        run("UPDATE orders SET updated_at=CURRENT_TIMESTAMP WHERE id=?", existing.order_id);
+        return json({ ok: true });
+      }
+      return bad("Not found", 404);
+    } catch (error) {
+      console.error(error);
+      return bad(error instanceof Error ? error.message : "Something went wrong");
+    }
+  }
+});
+console.log(`Printroom listening on :${port}`);
