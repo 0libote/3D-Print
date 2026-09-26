@@ -19,6 +19,8 @@ docker compose up -d --build
 
 Open `http://localhost:3000` and create the first account with a username and password. Email is not required, and passwords can be any length. That account is the owner and can add other people under **Team**. Existing users can sign in with their old email or their new username (based on their display name). Everyone in a studio shares the same products, filaments and orders.
 
+The owner can change any team member's password or delete their account from **Team**. Changing a password signs out that person's other sessions; deleting an account removes its sessions and push subscriptions while keeping shared orders and products. The owner cannot delete their own account.
+
 If port 3000 is in use, set `PRINTROOM_PORT`:
 
 ```bash

@@ -27,6 +27,10 @@
 .stock-actions { display:flex; gap:7px; margin-top:9px; }
 .stock-actions button { display:grid; place-items:center; width:34px; height:32px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
 .stock-actions button:disabled { opacity:.4; }
+.team-row { gap:14px; flex-wrap:wrap; }
+.team-row > span:nth-child(2) { min-width:120px; }
+.team-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
+.team-actions .outline-button, .team-actions .danger-text { min-height:38px; white-space:nowrap; }
 .modal-overlay { z-index:30; }
 @media (max-width:800px) { .settings-grid { grid-template-columns:1fr; } .settings-card:last-child { grid-column:auto; } }
 @media (max-width:520px) {
@@ -50,6 +54,8 @@
   .filter-tabs { overflow-x:auto; flex-wrap:nowrap; padding-bottom:5px; }
   .filter-tabs button { white-space:nowrap; flex:none; }
   .filament-card { min-width:0; }
+  .team-row { padding:16px; }
+  .team-actions { width:100%; margin-left:46px; }
   .detail-item-card { grid-template-columns:45px minmax(0,1fr) auto; }
   .detail-item-price { grid-column:2; grid-row:2; text-align:left; }
   .detail-item-stage { grid-column:1/-1; grid-row:3; }

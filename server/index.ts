@@ -219,6 +219,34 @@ Bun.serve({
         run("INSERT INTO users (name,username,email,password_hash) VALUES (?,?,?,?)", required(b.name, "Name", 100), login, `user-${randomBytes(12).toString("hex")}@local.invalid`, await hashPassword(password));
         return json({ ok: true }, 201);
       }
+      const userPassword = path.match(/^\/api\/users\/(\d+)\/password$/);
+      if (userPassword && req.method === "PUT") {
+        if (!currentUser.is_admin) return bad("Admin access required", 403);
+        const targetId = id(userPassword[1]);
+        if (!one("SELECT id FROM users WHERE id=?", targetId)) return bad("User not found", 404);
+        const b = await body(req);
+        if (typeof b.password !== "string") return bad("Password is required");
+        const passwordHash = await hashPassword(b.password);
+        db.transaction(() => {
+          run("UPDATE users SET password_hash=? WHERE id=?", passwordHash, targetId);
+          if (targetId === currentUser.id) {
+            const token = req.headers.get("cookie")?.match(/(?:^|; )session=([^;]+)/)?.[1];
+            run("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", targetId, hash(token || ""));
+          } else run("DELETE FROM sessions WHERE user_id=?", targetId);
+        })();
+        return json({ ok: true });
+      }
+      const userAccount = path.match(/^\/api\/users\/(\d+)$/);
+      if (userAccount && req.method === "DELETE") {
+        if (!currentUser.is_admin) return bad("Admin access required", 403);
+        const targetId = id(userAccount[1]);
+        const target = one("SELECT is_admin FROM users WHERE id=?", targetId);
+        if (!target) return bad("User not found", 404);
+        if (targetId === currentUser.id) return bad("You cannot delete your own account", 409);
+        if (target.is_admin && !one("SELECT id FROM users WHERE is_admin=1 AND id<>? LIMIT 1", targetId)) return bad("The last owner cannot be deleted", 409);
+        run("DELETE FROM users WHERE id=?", targetId);
+        return json({ ok: true });
+      }
       if (path === "/api/settings" && req.method === "PUT") {
         if (!currentUser.is_admin) return bad("Admin access required", 403);
         const b = await body(req);
