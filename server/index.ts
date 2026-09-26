@@ -29,6 +29,9 @@ if (!db.query("PRAGMA table_info(orders)").all().some((column: any) => column.na
 if (!db.query("PRAGMA table_info(orders)").all().some((column: any) => column.name === "confirmed_at")) {
   db.exec("ALTER TABLE orders ADD COLUMN confirmed_at TEXT");
 }
+if (!db.query("PRAGMA table_info(orders)").all().some((column: any) => column.name === "ship_by")) {
+  db.exec("ALTER TABLE orders ADD COLUMN ship_by TEXT NOT NULL DEFAULT ''");
+}
 if (!db.query("PRAGMA table_info(order_items)").all().some((column: any) => column.name === "status")) {
   db.exec("ALTER TABLE order_items ADD COLUMN status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','printing','printed','shipped'))");
   db.exec("UPDATE order_items SET status=(SELECT CASE orders.status WHEN 'new' THEN 'queued' ELSE orders.status END FROM orders WHERE orders.id=order_items.order_id)");
@@ -123,6 +126,12 @@ function optional(value: unknown, limit = 2000) {
   if (text.length > limit) throw new Error(`Text is too long (max ${limit} characters)`);
   return text;
 }
+function shipBy(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || !Number.isFinite(Date.parse(text)) || new Date(text).toISOString().slice(0, 10) !== text) throw new Error("Choose a valid ship-by date");
+  return text;
+}
 function id(value: string | undefined) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < 1) throw new Error("Invalid ID");
@@ -159,9 +168,25 @@ function updateOrderStatus(orderId: number) {
 }
 const mime: Record<string,string> = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css", ".svg":"image/svg+xml", ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".webp":"image/webp", ".ico":"image/x-icon", ".webmanifest":"application/manifest+json" };
 const port = Number(process.env.PORT || 3000);
-Bun.serve({
-  port,
-  async fetch(req) {
+const liveClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+const liveEncoder = new TextEncoder();
+function sendLive(chunk: Uint8Array) {
+  for (const client of liveClients) {
+    try { if ((client.desiredSize ?? 0) > 0) client.enqueue(chunk); }
+    catch { liveClients.delete(client); }
+  }
+}
+function broadcastChange() { sendLive(liveEncoder.encode(`data: ${Date.now()}\n\n`)); }
+setInterval(() => sendLive(liveEncoder.encode(": ping\n\n")), 20_000);
+function liveResponse() {
+  let client: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) { client = controller; liveClients.add(controller); controller.enqueue(liveEncoder.encode(": connected\n\n")); },
+    cancel() { liveClients.delete(client); }
+  });
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
+}
+async function handleRequest(req: Request, server: { timeout: (req: Request, seconds: number) => void }): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     if (!path.startsWith("/api/")) {
@@ -208,6 +233,10 @@ Bun.serve({
       }
       const currentUser = userFrom(req);
       if (!currentUser) return bad("Please sign in", 401);
+      if (path === "/api/events" && req.method === "GET") {
+        server.timeout(req, 0);
+        return liveResponse();
+      }
       if (path === "/api/users" && req.method === "GET") {
         if (!currentUser.is_admin) return bad("Admin access required", 403);
         return json(all("SELECT id,name,username,is_admin,created_at FROM users ORDER BY id"));
@@ -351,14 +380,14 @@ Bun.serve({
       }
       if (path === "/api/orders" && req.method === "POST") {
         const b = await body(req);
-        const result = run("INSERT INTO orders (customer,contact,notes,is_draft) VALUES (?,?,?,1)", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes));
+        const result = run("INSERT INTO orders (customer,contact,notes,ship_by,is_draft) VALUES (?,?,?,?,1)", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), shipBy(b.ship_by));
         notify("draft_created", "New draft order", `Order #${result.lastInsertRowid} for ${String(b.customer).trim()} was created.`, Number(result.lastInsertRowid));
         return json({ ok: true, id: Number(result.lastInsertRowid) }, 201);
       }
       const order = path.match(/^\/api\/orders\/(\d+)$/);
       if (order && req.method === "PUT") {
         const b = await body(req);
-        run("UPDATE orders SET customer=?,contact=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), id(order[1]));
+        run("UPDATE orders SET customer=?,contact=?,notes=?,ship_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), shipBy(b.ship_by), id(order[1]));
         return json({ ok: true });
       }
       const confirm = path.match(/^\/api\/orders\/(\d+)\/confirm$/);
@@ -421,6 +450,14 @@ Bun.serve({
       console.error(error);
       return bad(error instanceof Error ? error.message : "Something went wrong");
     }
+}
+Bun.serve({
+  port,
+  async fetch(req, server) {
+    const response = await handleRequest(req, server);
+    const path = new URL(req.url).pathname;
+    if (response.ok && req.method !== "GET" && path.startsWith("/api/") && !["/api/logout", "/api/notifications/test", "/api/push-subscriptions"].includes(path)) broadcastChange();
+    return response;
   }
 });
 console.log(`Printroom listening on :${port}`);

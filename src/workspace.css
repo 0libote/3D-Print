@@ -42,6 +42,9 @@ body, .app, .main { background: var(--canvas); color: var(--text); }
 .breadcrumb strong { color: var(--text); }
 .today { font-size: 13px; color: var(--muted); }
 .top-right { gap: 17px; }
+.live-status { display:inline-flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; font-weight:800; white-space:nowrap; }
+.live-status i { width:7px; height:7px; border-radius:50%; background:#bc916f; }
+.live-status.connected i { background:#64a881; box-shadow:0 0 0 3px #64a88124; }
 .theme-toggle { display: grid; place-items: center; height: 38px; width: 38px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 10px; }
 .theme-toggle:hover { background: var(--hover); }
 .workspace-content { max-width: 1900px; padding: 46px 48px 90px; }
@@ -88,6 +91,17 @@ body, .app, .main { background: var(--canvas); color: var(--text); }
 .print-item small { font-size: 12px; color: var(--muted); }
 .print-order { width: fit-content; max-width: 100%; display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent; color: var(--accent); font-size: 13px; font-weight: 700; text-align: left; }
 .print-order:hover { text-decoration: underline; }
+.print-order { flex-direction:column; align-items:flex-start; gap:4px; line-height:1.35; }
+.print-order .deadline { font-size:11px; }
+.ready-panel { margin-top:22px; }
+.ready-panel .panel-head { padding-bottom:16px; }
+.deadline { display:inline-flex; align-items:center; width:fit-content; border-radius:7px; padding:5px 7px; background:var(--hover); color:var(--muted); font-size:12px; font-weight:800; white-space:nowrap; }
+.deadline.overdue { color:#a94f40; background:#faece8; }
+.deadline.today { color:#9b6737; background:#fbf0dc; }
+.deadline-empty { color:var(--subtle); font-size:12px; }
+.detail-deadline { margin-top:14px; }
+html[data-theme="dark"] .deadline.overdue { color:#e6a297; background:#4a302f; }
+html[data-theme="dark"] .deadline.today { color:#e8c38e; background:#493b2b; }
 .print-quantity { font-size: 14px; color: var(--muted); font-weight: 700; }
 .stage-select { width: 100%; min-width: 145px; height: 40px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--input); color: var(--text); font-size: 13px; font-weight: 800; cursor: pointer; }
 .stage-queued { border-color: #b8c6db; }
