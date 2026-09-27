@@ -37,7 +37,7 @@ body, .app, .main { background: var(--canvas); color: var(--text); }
 .mini-card strong, .profile-text strong { color: var(--text); }
 .mini-card p, .profile-text small { color: var(--muted); }
 .profile { border-color: var(--border); }
-.topbar { height: 68px; padding: 0 48px; }
+.topbar { height: 68px; justify-content: flex-end; padding: 0 48px; }
 .breadcrumb { font-size: 14px; color: var(--subtle); }
 .breadcrumb strong { color: var(--text); }
 .today { font-size: 13px; color: var(--muted); }
@@ -219,6 +219,7 @@ html[data-theme="dark"] .draft-callout { background: #372e29; border-color: #5b4
 html[data-theme="dark"] .draft-callout > span { background: #4c392e; color: #e4ac87; }
 html[data-theme="dark"] .draft-callout p { color: #c6a995; }
 html[data-theme="dark"] .product-image { background: linear-gradient(135deg, #343735, #252827); }
+.product-image.placeholder { height: 145px; }
 html[data-theme="dark"] .queue-icon, html[data-theme="dark"] .mini-icon, html[data-theme="dark"] .empty > span { background: #353638; color: #d6a98b; }
 html[data-theme="dark"] .profile button:hover, html[data-theme="dark"] .icon-button:hover { background: var(--hover); color: var(--text); }
 html[data-theme="dark"] .filament-card, html[data-theme="dark"] .product-card, html[data-theme="dark"] .team-row, html[data-theme="dark"] .product-foot { border-color: var(--border); }
