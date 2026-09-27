@@ -19,6 +19,18 @@
 .notification-status small { color:var(--muted); line-height:1.4; }
 .preference-list { margin-top:20px; }
 .settings-message { padding:14px 18px; background:var(--hover); border-radius:10px; font-size:14px; }
+
+/* Keep touch interaction app-like and prevent iOS from zooming on gestures or
+   when small form controls receive focus. */
+html { touch-action: pan-x pan-y; }
+@media (max-width: 800px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 .filament-swatch { overflow:hidden; }
 .filament-swatch img { width:100%; height:100%; object-fit:cover; }
 .stock-count { display:grid; gap:4px; margin-top:12px; }
@@ -35,11 +47,11 @@
 @media (max-width:800px) { .settings-grid { grid-template-columns:1fr; } .settings-card:last-child { grid-column:auto; } }
 @media (max-width:520px) {
   .app { display:block; }
-  .sidebar { position:fixed; top:auto; right:0; bottom:0; left:0; z-index:20; width:100%; height:auto; min-height:0; padding:5px 8px calc(5px + env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--border); box-shadow:0 -8px 28px rgba(0,0,0,.08); }
+  .sidebar { position:fixed; top:auto; right:0; bottom:0; left:0; z-index:20; width:100%; height:auto; min-height:0; padding:5px 8px calc(5px + env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--border); box-shadow:0 -2px 12px rgba(0,0,0,.06); }
   .sidebar .brand,.sidebar .workspace-label,.sidebar .sidebar-bottom { display:none; }
   .sidebar nav { display:flex; gap:2px; width:100%; margin:0; }
-  .sidebar .nav { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:2px; padding:7px 2px; border-radius:9px; font-size:10px; line-height:1.1; white-space:nowrap; }
-  .sidebar .nav[data-page="products"], .sidebar .nav[data-page="team"] { display:none; }
+  .sidebar .nav { flex:1 1 0; min-width:0; min-height:48px; display:flex; flex-direction:column; gap:2px; padding:5px 2px; border-radius:9px; font-size:10px; line-height:1.1; white-space:nowrap; }
+  .sidebar .nav[data-page="team"] { display:none; }
   .sidebar .nav svg { width:20px; height:20px; }
   .sidebar .nav span { display:block; font-size:10px; }
   .sidebar .nav b { display:none; }
@@ -52,7 +64,7 @@
   .page-heading > button { flex:none; }
   .settings-card { padding:20px; }
   .filter-tabs { overflow-x:auto; flex-wrap:nowrap; padding-bottom:5px; }
-  .filter-tabs button { white-space:nowrap; flex:none; }
+  .filter-tabs button { min-height:40px; white-space:nowrap; flex:none; }
   .filament-card { min-width:0; }
   .team-row { padding:16px; }
   .team-actions { width:100%; margin-left:46px; }

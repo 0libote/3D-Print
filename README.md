@@ -43,7 +43,7 @@ Order details use a full-page view. Pieces still to print appear in the print qu
 
 Signed-in browsers receive changes from other users automatically. A live status appears in the top bar; the app also refreshes when you return to the tab and checks periodically if the live connection is interrupted.
 
-Order items retain their product name, price, filament name and colour when added. Editing or deleting a catalogue entry will not change an existing order. The dashboard shows your active queue, a seven day sales chart, and recent team activity. Each order also shows who changed it and when.
+Order items retain their product name, price, filament name and colour when added. Editing or deleting a catalogue entry will not change an existing order. The overview shows the active queue and recent orders. Each order also shows who changed it and when.
 
 In **Settings**, an owner can hide all price and total displays or select a currency. Price data stays in the database when hidden. Product images are examples; the swatch shows the chosen filament colour, but does not recolour an uploaded image.
 
@@ -66,4 +66,4 @@ bun run dev
 
 Vite runs on port 5173 and proxies API requests to Bun on port 3000. The production image builds the frontend and serves it from Bun.
 
-The UI uses React, Astryx with its stone theme, StyleX and TanStack Charts. Canvas UI effects and shadcn lint are intentionally absent: Canvas UI is an experimental visual effect library, while shadcn lint targets Tailwind projects; neither helps this StyleX based data entry app.
+The UI uses React, Astryx with its stone theme, and StyleX. Canvas UI effects and shadcn lint are intentionally absent: Canvas UI is an experimental visual effect library, while shadcn lint targets Tailwind projects; neither helps this StyleX based data entry app.
