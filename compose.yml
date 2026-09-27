@@ -1,6 +1,8 @@
 services:
   printroom:
     build: .
+    environment:
+      TZ: ${TZ:-Europe/London}
     ports:
       - "${PRINTROOM_PORT:-3000}:3000"
     volumes:

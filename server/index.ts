@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS order_items (id INTEGER PRIMARY KEY, order_id INTEGER
 CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS notification_preferences (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, draft_created INTEGER NOT NULL DEFAULT 0, sale_confirmed INTEGER NOT NULL DEFAULT 1, print_stage INTEGER NOT NULL DEFAULT 1, order_shipped INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, subscription_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS activity_events (id INTEGER PRIMARY KEY, actor_id INTEGER, actor_name TEXT NOT NULL, order_id INTEGER, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS activity_order_idx ON activity_events(order_id,id DESC);
+CREATE TABLE IF NOT EXISTS deadline_reminders (order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, kind TEXT NOT NULL, ship_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(order_id,kind,ship_by));
 `);
 if (!db.query("PRAGMA table_info(users)").all().some((column: any) => column.name === "is_admin")) db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0");
 if (db.query("SELECT id FROM users LIMIT 1").get() && !db.query("SELECT id FROM users WHERE is_admin=1 LIMIT 1").get()) db.exec("UPDATE users SET is_admin=1 WHERE id=(SELECT MIN(id) FROM users)");
@@ -35,6 +38,18 @@ if (!db.query("PRAGMA table_info(orders)").all().some((column: any) => column.na
 if (!db.query("PRAGMA table_info(order_items)").all().some((column: any) => column.name === "status")) {
   db.exec("ALTER TABLE order_items ADD COLUMN status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','printing','printed','shipped'))");
   db.exec("UPDATE order_items SET status=(SELECT CASE orders.status WHEN 'new' THEN 'queued' ELSE orders.status END FROM orders WHERE orders.id=order_items.order_id)");
+}
+if (!db.query("PRAGMA table_info(order_items)").all().some((column: any) => column.name === "printed_quantity")) {
+  db.exec("ALTER TABLE order_items ADD COLUMN printed_quantity INTEGER NOT NULL DEFAULT 0");
+  db.exec("UPDATE order_items SET printed_quantity=quantity WHERE status IN ('printed','shipped')");
+}
+if (!db.query("PRAGMA table_info(order_items)").all().some((column: any) => column.name === "shipped_quantity")) {
+  db.exec("ALTER TABLE order_items ADD COLUMN shipped_quantity INTEGER NOT NULL DEFAULT 0");
+  db.exec("UPDATE order_items SET shipped_quantity=quantity WHERE status='shipped'");
+}
+for (const column of ["deadline_soon INTEGER NOT NULL DEFAULT 1", "deadline_overdue INTEGER NOT NULL DEFAULT 1"]) {
+  const name = column.split(" ")[0];
+  if (!(db.query("PRAGMA table_info(notification_preferences)").all() as { name: string }[]).some(field => field.name === name)) db.exec(`ALTER TABLE notification_preferences ADD COLUMN ${column}`);
 }
 if (!db.query("PRAGMA table_info(users)").all().some((column: any) => column.name === "username")) {
   db.exec("ALTER TABLE users ADD COLUMN username TEXT");
@@ -73,8 +88,8 @@ if (!vapidPublic || !vapidPrivate) {
   run("INSERT OR REPLACE INTO app_settings (key,value) VALUES ('vapid_public',?),('vapid_private',?)", vapidPublic, vapidPrivate);
 }
 webpush.setVapidDetails("https://github.com/0libote/3D-Print", vapidPublic, vapidPrivate);
-type NoticeKind = "draft_created" | "sale_confirmed" | "print_stage" | "order_shipped";
-const noticeKinds: NoticeKind[] = ["draft_created", "sale_confirmed", "print_stage", "order_shipped"];
+type NoticeKind = "draft_created" | "sale_confirmed" | "print_stage" | "order_shipped" | "deadline_soon" | "deadline_overdue";
+const noticeKinds: NoticeKind[] = ["draft_created", "sale_confirmed", "print_stage", "order_shipped", "deadline_soon", "deadline_overdue"];
 function settings() {
   return {
     show_money: one("SELECT value FROM app_settings WHERE key='show_money'")?.value !== "false",
@@ -83,7 +98,10 @@ function settings() {
 }
 function preferences(userId: number) {
   run("INSERT OR IGNORE INTO notification_preferences (user_id) VALUES (?)", userId);
-  return one("SELECT draft_created,sale_confirmed,print_stage,order_shipped FROM notification_preferences WHERE user_id=?", userId);
+  return one(`SELECT ${noticeKinds.join(",")} FROM notification_preferences WHERE user_id=?`, userId);
+}
+function activity(actor: Row | null, orderId: number | null, kind: string, detail: string) {
+  run("INSERT INTO activity_events (actor_id,actor_name,order_id,kind,detail) VALUES (?,?,?,?,?)", actor?.id ?? null, actor?.name ?? "Printroom", orderId, kind, detail);
 }
 async function sendNotice(kind: NoticeKind, title: string, message: string, orderId?: number, onlyUserId?: number) {
   const subscribers = all(`SELECT ps.endpoint,ps.subscription_json FROM push_subscriptions ps JOIN notification_preferences np ON np.user_id=ps.user_id WHERE np.${kind}=1${onlyUserId ? " AND ps.user_id=?" : ""}`, ...(onlyUserId ? [onlyUserId] : []));
@@ -166,6 +184,47 @@ function updateOrderStatus(orderId: number) {
   else if (items.some(item => item.status !== "queued")) status = "printing";
   run("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", status, orderId);
 }
+function progressStage(quantity: number, printed: number, shipped: number, previous: string) {
+  if (shipped === quantity) return "shipped";
+  if (printed === quantity) return "printed";
+  if (printed > 0 || shipped > 0 || previous === "printing") return "printing";
+  return "queued";
+}
+function quantity(value: unknown, label: string, min: number, max: number) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < min || number > max) throw new Error(`${label} must be between ${min} and ${max}`);
+  return number;
+}
+function itemProduct(b: Row) {
+  const productId = id(String(b.product_id));
+  const product = one("SELECT * FROM products WHERE id=?", productId);
+  if (!product) throw new Error("Product not found");
+  const filamentId = b.filament_id ? id(String(b.filament_id)) : null;
+  const filament = filamentId ? one("SELECT f.* FROM filaments f JOIN product_filaments pf ON pf.filament_id=f.id WHERE pf.product_id=? AND f.id=?", productId, filamentId) : null;
+  if (filamentId && !filament) throw new Error("That filament is not offered for this product");
+  return { productId, product, filamentId, filament };
+}
+function checkDeadlineReminders() {
+  const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: process.env.TZ || "Europe/London", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" });
+  const parts = Object.fromEntries(formatter.formatToParts(new Date()).map(part => [part.type, part.value]));
+  if (Number(parts.hour) < 9) return;
+  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  const todayDay = Date.parse(today) / 86400000;
+  let changed = false;
+  for (const order of all("SELECT id,customer,ship_by FROM orders WHERE is_draft=0 AND status<>'shipped' AND ship_by<>''")) {
+    const days = Date.parse(order.ship_by) / 86400000 - todayDay;
+    if (days > 2) continue;
+    const overdue = days < 0;
+    const kind = overdue ? "deadline_overdue" : "deadline_soon";
+    const result = run("INSERT OR IGNORE INTO deadline_reminders (order_id,kind,ship_by) VALUES (?,?,?)", order.id, kind, order.ship_by);
+    if (!result.changes) continue;
+    const detail = overdue ? `Order #${order.id} for ${order.customer} is overdue (ship by ${order.ship_by}).` : `Order #${order.id} for ${order.customer} is due to ship ${days === 0 ? "today" : `in ${days} ${days === 1 ? "day" : "days"}`} (${order.ship_by}).`;
+    activity(null, order.id, kind, detail);
+    notify(kind, overdue ? "Shipping deadline overdue" : "Shipping deadline approaching", detail, order.id);
+    changed = true;
+  }
+  if (changed) broadcastChange();
+}
 const mime: Record<string,string> = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css", ".svg":"image/svg+xml", ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".webp":"image/webp", ".ico":"image/x-icon", ".webmanifest":"application/manifest+json" };
 const port = Number(process.env.PORT || 3000);
 const liveClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
@@ -205,7 +264,7 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
     try {
       if (path === "/api/bootstrap" && req.method === "GET") {
         const user = userFrom(req);
-        return json({ needsSetup: !one("SELECT id FROM users LIMIT 1"), user, users: user?.is_admin ? all("SELECT id,name,username,is_admin,created_at FROM users ORDER BY id") : [], settings: settings(), notifications: user ? { preferences: preferences(user.id), vapidPublicKey: vapidPublic, subscribed: !!one("SELECT endpoint FROM push_subscriptions WHERE user_id=? LIMIT 1", user.id) } : null, filaments: user ? all("SELECT * FROM filaments ORDER BY name") : [], products: user ? productRows() : [], orders: user ? orderRows() : [] });
+        return json({ needsSetup: !one("SELECT id FROM users LIMIT 1"), user, users: user?.is_admin ? all("SELECT id,name,username,is_admin,created_at FROM users ORDER BY id") : [], settings: settings(), notifications: user ? { preferences: preferences(user.id), vapidPublicKey: vapidPublic, subscribed: !!one("SELECT endpoint FROM push_subscriptions WHERE user_id=? LIMIT 1", user.id) } : null, filaments: user ? all("SELECT * FROM filaments ORDER BY name") : [], products: user ? productRows() : [], orders: user ? orderRows() : [], activity: user ? all("SELECT * FROM activity_events ORDER BY id DESC LIMIT 100") : [] });
       }
       if (path === "/api/setup" && req.method === "POST") {
         if (one("SELECT id FROM users LIMIT 1")) return bad("Setup is already complete", 409);
@@ -291,7 +350,7 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         const b = await body(req);
         if (noticeKinds.some(kind => typeof b[kind] !== "boolean")) return bad("Invalid notification preferences");
         preferences(currentUser.id);
-        run("UPDATE notification_preferences SET draft_created=?,sale_confirmed=?,print_stage=?,order_shipped=? WHERE user_id=?", ...noticeKinds.map(kind => b[kind] ? 1 : 0), currentUser.id);
+        run(`UPDATE notification_preferences SET ${noticeKinds.map(kind => `${kind}=?`).join(",")} WHERE user_id=?`, ...noticeKinds.map(kind => b[kind] ? 1 : 0), currentUser.id);
         return json({ ok: true });
       }
       if (path === "/api/push-subscriptions" && req.method === "POST") {
@@ -381,13 +440,19 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
       if (path === "/api/orders" && req.method === "POST") {
         const b = await body(req);
         const result = run("INSERT INTO orders (customer,contact,notes,ship_by,is_draft) VALUES (?,?,?,?,1)", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), shipBy(b.ship_by));
+        activity(currentUser, Number(result.lastInsertRowid), "draft_created", `Created draft for ${String(b.customer).trim()}.`);
         notify("draft_created", "New draft order", `Order #${result.lastInsertRowid} for ${String(b.customer).trim()} was created.`, Number(result.lastInsertRowid));
         return json({ ok: true, id: Number(result.lastInsertRowid) }, 201);
       }
       const order = path.match(/^\/api\/orders\/(\d+)$/);
       if (order && req.method === "PUT") {
         const b = await body(req);
-        run("UPDATE orders SET customer=?,contact=?,notes=?,ship_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), shipBy(b.ship_by), id(order[1]));
+        const orderId = id(order[1]), existing = one("SELECT * FROM orders WHERE id=?", orderId);
+        if (!existing) return bad("Order not found", 404);
+        const deadline = shipBy(b.ship_by);
+        run("UPDATE orders SET customer=?,contact=?,notes=?,ship_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", required(b.customer, "Customer"), optional(b.contact, 200), optional(b.notes), deadline, orderId);
+        activity(currentUser, orderId, "order_updated", existing.ship_by !== deadline ? `Updated order details and ship-by date to ${deadline || "none"}.` : "Updated order details.");
+        setTimeout(checkDeadlineReminders, 1000);
         return json({ ok: true });
       }
       const confirm = path.match(/^\/api\/orders\/(\d+)\/confirm$/);
@@ -398,21 +463,20 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         if (!existing.is_draft) return bad("This order is already confirmed", 409);
         if (!one("SELECT id FROM order_items WHERE order_id=? LIMIT 1", orderId)) return bad("Add at least one print item before confirming this sale");
         run("UPDATE orders SET is_draft=0,confirmed_at=CURRENT_TIMESTAMP,status='new',updated_at=CURRENT_TIMESTAMP WHERE id=?", orderId);
+        activity(currentUser, orderId, "sale_confirmed", "Confirmed the sale and added its items to the print queue.");
         notify("sale_confirmed", "Sale confirmed", `Order #${orderId} is ready to fulfill.`, orderId);
+        setTimeout(checkDeadlineReminders, 1000);
         return json({ ok: true });
       }
-      if (order && req.method === "DELETE") { run("DELETE FROM orders WHERE id=?", id(order[1])); return json({ ok: true }); }
+      if (order && req.method === "DELETE") { const orderId = id(order[1]); if (!one("SELECT id FROM orders WHERE id=?", orderId)) return bad("Order not found", 404); activity(currentUser, orderId, "order_deleted", `Deleted order #${orderId}.`); run("DELETE FROM orders WHERE id=?", orderId); return json({ ok: true }); }
       const items = path.match(/^\/api\/orders\/(\d+)\/items$/);
       if (items && req.method === "POST") {
-        const b = await body(req), orderId = id(items[1]), productId = id(String(b.product_id));
-        const product = one("SELECT * FROM products WHERE id=?", productId);
-        if (!product || !one("SELECT id FROM orders WHERE id=?", orderId)) return bad("Order or product not found", 404);
-        const filamentId = b.filament_id ? id(String(b.filament_id)) : null;
-        const filament = filamentId ? one("SELECT f.* FROM filaments f JOIN product_filaments pf ON pf.filament_id=f.id WHERE pf.product_id=? AND f.id=?", productId, filamentId) : null;
-        if (filamentId && !filament) return bad("That filament is not offered for this product");
-        const quantity = Number(b.quantity);
-        if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) return bad("Quantity must be between 1 and 10,000");
-        run("INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price,status) VALUES (?,?,?,?,?,?,?,?,?)", orderId, productId, product.name, filamentId, filament?.name ?? "", filament?.color ?? "#adb5bd", quantity, product.price, "queued");
+        const b = await body(req), orderId = id(items[1]);
+        if (!one("SELECT id FROM orders WHERE id=?", orderId)) return bad("Order not found", 404);
+        const { productId, product, filamentId, filament } = itemProduct(b);
+        const count = quantity(b.quantity, "Quantity", 1, 10000);
+        run("INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price,status) VALUES (?,?,?,?,?,?,?,?,?)", orderId, productId, product.name, filamentId, filament?.name ?? "", filament?.color ?? "#adb5bd", count, product.price, "queued");
+        activity(currentUser, orderId, "item_added", `Added ${count} × ${product.name}${filament ? ` in ${filament.name}` : ""}.`);
         updateOrderStatus(orderId);
         run("UPDATE orders SET updated_at=CURRENT_TIMESTAMP WHERE id=?", orderId);
         return json({ ok: true }, 201);
@@ -422,25 +486,71 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         const b = await body(req), status = String(b.status ?? "");
         if (!itemStatuses.includes(status)) return bad("Invalid print stage");
         const itemId = id(itemStatus[1]);
-        const existing = one("SELECT order_items.order_id,order_items.status,order_items.product_name,orders.is_draft FROM order_items JOIN orders ON orders.id=order_items.order_id WHERE order_items.id=?", itemId);
+        const existing = one("SELECT order_items.*,orders.is_draft FROM order_items JOIN orders ON orders.id=order_items.order_id WHERE order_items.id=?", itemId);
         if (!existing) return bad("Item not found", 404);
         if (existing.is_draft) return bad("Confirm the sale before moving print items", 409);
         const before = one("SELECT status FROM orders WHERE id=?", existing.order_id)?.status;
-        run("UPDATE order_items SET status=? WHERE id=?", status, itemId);
+        const printed = status === "printed" || status === "shipped" ? existing.quantity : 0;
+        const shipped = status === "shipped" ? existing.quantity : 0;
+        run("UPDATE order_items SET status=?,printed_quantity=?,shipped_quantity=? WHERE id=?", status, printed, shipped, itemId);
         updateOrderStatus(existing.order_id);
         const after = one("SELECT status FROM orders WHERE id=?", existing.order_id)?.status;
-        if (existing.status !== status) {
+        if (existing.status !== status || existing.printed_quantity !== printed || existing.shipped_quantity !== shipped) {
+          activity(currentUser, existing.order_id, "print_stage", `Moved ${existing.product_name} to ${status} (${printed} printed, ${shipped} shipped of ${existing.quantity}).`);
           notify("print_stage", "Print stage updated", `${existing.product_name} in order #${existing.order_id} is now ${status}.`, existing.order_id);
           if (before !== "shipped" && after === "shipped") notify("order_shipped", "Order shipped", `All items in order #${existing.order_id} have shipped.`, existing.order_id);
         }
         return json({ ok: true });
       }
+      const itemProgress = path.match(/^\/api\/items\/(\d+)\/progress$/);
+      if (itemProgress && req.method === "POST") {
+        const b = await body(req), itemId = id(itemProgress[1]);
+        if (!["print_one", "ship_one"].includes(b.action)) return bad("Choose print one or ship one");
+        const result = db.transaction(() => {
+          const item = one("SELECT order_items.*,orders.is_draft FROM order_items JOIN orders ON orders.id=order_items.order_id WHERE order_items.id=?", itemId);
+          if (!item) return { error: "Item not found", status: 404 };
+          if (item.is_draft) return { error: "Confirm the sale before moving print items", status: 409 };
+          const printed = item.printed_quantity + (b.action === "print_one" ? 1 : 0);
+          const shipped = item.shipped_quantity + (b.action === "ship_one" ? 1 : 0);
+          if (printed > item.quantity) return { error: "All pieces are already printed", status: 409 };
+          if (shipped > printed) return { error: "Print another piece before shipping it", status: 409 };
+          const before = one("SELECT status FROM orders WHERE id=?", item.order_id)?.status;
+          const stage = progressStage(item.quantity, printed, shipped, item.status);
+          run("UPDATE order_items SET printed_quantity=?,shipped_quantity=?,status=? WHERE id=?", printed, shipped, stage, itemId);
+          updateOrderStatus(item.order_id);
+          activity(currentUser, item.order_id, b.action, `${b.action === "print_one" ? "Printed" : "Shipped"} one ${item.product_name} (${printed} printed, ${shipped} shipped of ${item.quantity}).`);
+          const after = one("SELECT status FROM orders WHERE id=?", item.order_id)?.status;
+          return { item, stage, before, after };
+        })();
+        if ("error" in result) return bad(result.error!, result.status);
+        notify("print_stage", "Print progress updated", `${result.item.product_name} in order #${result.item.order_id}: ${result.stage}.`, result.item.order_id);
+        if (result.before !== "shipped" && result.after === "shipped") notify("order_shipped", "Order shipped", `All items in order #${result.item.order_id} have shipped.`, result.item.order_id);
+        return json({ ok: true });
+      }
       const item = path.match(/^\/api\/items\/(\d+)$/);
+      if (item && req.method === "PUT") {
+        const b = await body(req), itemId = id(item[1]);
+        const existing = one("SELECT * FROM order_items WHERE id=?", itemId);
+        if (!existing) return bad("Item not found", 404);
+        const { productId, product, filamentId, filament } = itemProduct(b);
+        const count = quantity(b.quantity, "Quantity", 1, 10000);
+        const printed = quantity(b.printed_quantity, "Printed count", 0, count);
+        const shipped = quantity(b.shipped_quantity, "Shipped count", 0, printed);
+        const stage = progressStage(count, printed, shipped, existing.status);
+        const before = one("SELECT status FROM orders WHERE id=?", existing.order_id)?.status;
+        run("UPDATE order_items SET product_id=?,product_name=?,filament_id=?,filament_name=?,color=?,quantity=?,unit_price=?,printed_quantity=?,shipped_quantity=?,status=? WHERE id=?", productId, product.name, filamentId, filament?.name ?? "", filament?.color ?? "#adb5bd", count, existing.product_id === productId ? existing.unit_price : product.price, printed, shipped, stage, itemId);
+        updateOrderStatus(existing.order_id);
+        activity(currentUser, existing.order_id, "item_updated", `Updated ${product.name}: ${count} ordered, ${printed} printed, ${shipped} shipped${filament ? ` in ${filament.name}` : ""}.`);
+        const after = one("SELECT status FROM orders WHERE id=?", existing.order_id)?.status;
+        if (before !== "shipped" && after === "shipped") notify("order_shipped", "Order shipped", `All items in order #${existing.order_id} have shipped.`, existing.order_id);
+        return json({ ok: true });
+      }
       if (item && req.method === "DELETE") {
         const itemId = id(item[1]);
-        const existing = one("SELECT order_id FROM order_items WHERE id=?", itemId);
+        const existing = one("SELECT order_id,product_name FROM order_items WHERE id=?", itemId);
         if (!existing) return bad("Item not found", 404);
         run("DELETE FROM order_items WHERE id=?", itemId);
+        activity(currentUser, existing.order_id, "item_deleted", `Removed ${existing.product_name} from the order.`);
         updateOrderStatus(existing.order_id);
         run("UPDATE orders SET updated_at=CURRENT_TIMESTAMP WHERE id=?", existing.order_id);
         return json({ ok: true });
@@ -460,4 +570,6 @@ Bun.serve({
     return response;
   }
 });
+setTimeout(checkDeadlineReminders, 2000);
+setInterval(checkDeadlineReminders, 15 * 60 * 1000);
 console.log(`Printroom listening on :${port}`);
