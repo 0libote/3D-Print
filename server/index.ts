@@ -3,6 +3,7 @@ import { mkdirSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 import webpush from "web-push";
+import { orderStatus, progressStage } from "../shared/order-progress.ts";
 
 const dataDir = process.env.DATA_DIR || "./data";
 const uploadDir = join(dataDir, "uploads");
@@ -178,17 +179,8 @@ function updateOrderStatus(orderId: number) {
   const order = one("SELECT is_draft FROM orders WHERE id=?", orderId);
   if (!order || order.is_draft) return;
   const items = all("SELECT status FROM order_items WHERE order_id=?", orderId);
-  let status = "new";
-  if (items.length && items.every(item => item.status === "shipped")) status = "shipped";
-  else if (items.length && items.every(item => item.status === "printed" || item.status === "shipped")) status = "printed";
-  else if (items.some(item => item.status !== "queued")) status = "printing";
+  const status = orderStatus(items.map(item => item.status));
   run("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", status, orderId);
-}
-function progressStage(quantity: number, printed: number, shipped: number, previous: string) {
-  if (shipped === quantity) return "shipped";
-  if (printed === quantity) return "printed";
-  if (printed > 0 || shipped > 0 || previous === "printing") return "printing";
-  return "queued";
 }
 function quantity(value: unknown, label: string, min: number, max: number) {
   const number = Number(value);

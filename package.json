@@ -6,6 +6,7 @@
     "dev": "vite --host 0.0.0.0",
     "server": "bun run server/index.ts",
     "build": "tsc --noEmit && vite build",
+    "test": "bun test",
     "start": "bun run server/index.ts"
   },
   "dependencies": {
