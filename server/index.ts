@@ -263,9 +263,15 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         const b = await body(req);
         const name = required(b.name, "Name", 100), login = username(b.username);
         const password = String(b.password ?? "");
-        const result = run("INSERT INTO users (name,username,email,password_hash,is_admin) VALUES (?,?,?,?,1)", name, login, `user-${randomBytes(12).toString("hex")}@local.invalid`, await hashPassword(password));
+        const passwordHash = await hashPassword(password);
         const token = randomBytes(32).toString("hex");
-        run("INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))", hash(token), result.lastInsertRowid);
+        const created = db.transaction(() => {
+          if (one("SELECT id FROM users LIMIT 1")) return false;
+          const result = run("INSERT INTO users (name,username,email,password_hash,is_admin) VALUES (?,?,?,?,1)", name, login, `user-${randomBytes(12).toString("hex")}@local.invalid`, passwordHash);
+          run("INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))", hash(token), result.lastInsertRowid);
+          return true;
+        })();
+        if (!created) return bad("Setup is already complete", 409);
         return new Response(JSON.stringify({ ok: true }), { status: 201, headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, token, 2592000) } });
       }
       if (path === "/api/login" && req.method === "POST") {
