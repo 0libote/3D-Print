@@ -3,11 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "server": "bun run server/index.ts",
-    "build": "tsc --noEmit && vite build",
+    "dev": "bun --bun vite --host 0.0.0.0",
+    "server": "bun server/index.ts",
+    "build": "bun --bun tsc --noEmit && bun --bun vite build",
     "test": "bun test",
-    "start": "bun run server/index.ts"
+    "start": "bun server/index.ts"
   },
   "dependencies": {
     "@astryxdesign/core": "^0.6.0",
