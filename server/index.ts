@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, existsSync } from "node:fs";
-import { join, extname, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import webpush from "web-push";
 import { orderStatus, progressStage } from "../shared/order-progress.ts";
 
@@ -119,12 +119,21 @@ async function sendNotice(kind: NoticeKind, title: string, message: string, orde
 function notify(kind: NoticeKind, title: string, message: string, orderId?: number) {
   void sendNotice(kind, title, message, orderId).catch(error => console.error("Notification failed:", error));
 }
+function sessionToken(req: Request) {
+  return new Bun.CookieMap(req.headers.get("cookie") ?? "").get("session");
+}
 function cookie(req: Request, token: string, maxAge: number) {
   const secure = new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
-  return `session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+  return new Bun.Cookie("session", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge,
+    secure,
+  }).serialize();
 }
 function userFrom(req: Request) {
-  const token = req.headers.get("cookie")?.match(/(?:^|; )session=([^;]+)/)?.[1];
+  const token = sessionToken(req);
   if (!token) return null;
   return one("SELECT users.id, users.name, users.username, users.is_admin FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>datetime('now')", hash(token));
 }
@@ -218,7 +227,6 @@ function checkDeadlineReminders() {
   }
   if (changed) broadcastChange();
 }
-const mime: Record<string,string> = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css", ".svg":"image/svg+xml", ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".webp":"image/webp", ".ico":"image/x-icon", ".webmanifest":"application/manifest+json" };
 const port = Number(process.env.PORT || 3000);
 const liveClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const liveEncoder = new TextEncoder();
@@ -242,13 +250,14 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
     const url = new URL(req.url);
     const path = url.pathname;
     if (!path.startsWith("/api/")) {
-      const root = path.startsWith("/uploads/") ? resolve(uploadDir) : resolve("./dist");
-      const relative = path.startsWith("/uploads/") ? path.slice(9) : path.slice(1);
+      const root = resolve("./dist");
+      const relative = path.slice(1);
       const file = resolve(root, relative || "index.html");
       if (!file.startsWith(root + "/") && file !== root) return bad("Not found", 404);
-      const selected = existsSync(file) ? file : (root.endsWith("dist") ? join(root, "index.html") : "");
-      if (!selected || !existsSync(selected)) return bad("Not found", 404);
-      return new Response(Bun.file(selected), { headers: { "Content-Type": mime[extname(selected)] || "application/octet-stream" } });
+      let selected = Bun.file(file);
+      if (!(await selected.exists())) selected = Bun.file(join(root, "index.html"));
+      if (!(await selected.exists())) return bad("Not found", 404);
+      return new Response(selected);
     }
     if (req.method !== "GET") {
       const origin = req.headers.get("origin");
@@ -285,7 +294,7 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, token, 2592000) } });
       }
       if (path === "/api/logout" && req.method === "POST") {
-        const token = req.headers.get("cookie")?.match(/(?:^|; )session=([^;]+)/)?.[1];
+        const token = sessionToken(req);
         if (token) run("DELETE FROM sessions WHERE token_hash=?", hash(token));
         return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, "", 0) } });
       }
@@ -562,6 +571,9 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
 }
 Bun.serve({
   port,
+  routes: {
+    "/uploads/*": { dir: uploadDir },
+  },
   async fetch(req, server) {
     const response = await handleRequest(req, server);
     const path = new URL(req.url).pathname;
