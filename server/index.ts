@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import webpush from "web-push";
 import { orderStatus, progressStage } from "../shared/order-progress.ts";
 
@@ -73,7 +73,7 @@ const one = (sql: string, ...params: any[]) => db.query(sql).get(...params) as R
 const run = (sql: string, ...params: any[]) => db.query(sql).run(...params);
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
-const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const hash = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
 const hashPassword = async (password: string) => "v2$" + await Bun.password.hash("printroom-v2:" + password);
 async function verifyPassword(password: string, stored: string) {
   if (stored.startsWith("v2$")) return Bun.password.verify("printroom-v2:" + password, stored.slice(3));
