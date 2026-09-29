@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
 import webpush from "web-push";
 import { orderStatus, progressStage } from "../shared/order-progress.ts";
 
@@ -74,6 +73,8 @@ const run = (sql: string, ...params: any[]) => db.query(sql).run(...params);
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
 const hash = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+const randomHex = (bytes: number) =>
+  Array.from(crypto.getRandomValues(new Uint8Array(bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
 const hashPassword = async (password: string) => "v2$" + await Bun.password.hash("printroom-v2:" + password);
 async function verifyPassword(password: string, stored: string) {
   if (stored.startsWith("v2$")) return Bun.password.verify("printroom-v2:" + password, stored.slice(3));
@@ -264,10 +265,10 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         const name = required(b.name, "Name", 100), login = username(b.username);
         const password = String(b.password ?? "");
         const passwordHash = await hashPassword(password);
-        const token = randomBytes(32).toString("hex");
+        const token = randomHex(32);
         const created = db.transaction(() => {
           if (one("SELECT id FROM users LIMIT 1")) return false;
-          const result = run("INSERT INTO users (name,username,email,password_hash,is_admin) VALUES (?,?,?,?,1)", name, login, `user-${randomBytes(12).toString("hex")}@local.invalid`, passwordHash);
+          const result = run("INSERT INTO users (name,username,email,password_hash,is_admin) VALUES (?,?,?,?,1)", name, login, `user-${randomHex(12)}@local.invalid`, passwordHash);
           run("INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))", hash(token), result.lastInsertRowid);
           return true;
         })();
@@ -279,7 +280,7 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         const login = String(b.username ?? b.email ?? "").trim();
         const user = one("SELECT * FROM users WHERE username=? COLLATE NOCASE OR email=? COLLATE NOCASE", login, login);
         if (!user || !await verifyPassword(String(b.password ?? ""), user.password_hash)) return bad("Incorrect username or password", 401);
-        const token = randomBytes(32).toString("hex");
+        const token = randomHex(32);
         run("INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))", hash(token), user.id);
         return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json", "Set-Cookie": cookie(req, token, 2592000) } });
       }
@@ -302,7 +303,7 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         if (!currentUser.is_admin) return bad("Admin access required", 403);
         const b = await body(req), login = username(b.username), password = String(b.password ?? "");
         if (one("SELECT id FROM users WHERE username=? COLLATE NOCASE", login)) return bad("That username is already in use", 409);
-        run("INSERT INTO users (name,username,email,password_hash) VALUES (?,?,?,?)", required(b.name, "Name", 100), login, `user-${randomBytes(12).toString("hex")}@local.invalid`, await hashPassword(password));
+        run("INSERT INTO users (name,username,email,password_hash) VALUES (?,?,?,?)", required(b.name, "Name", 100), login, `user-${randomHex(12)}@local.invalid`, await hashPassword(password));
         return json({ ok: true }, 201);
       }
       const userPassword = path.match(/^\/api\/users\/(\d+)\/password$/);
@@ -431,7 +432,7 @@ async function handleRequest(req: Request, server: { timeout: (req: Request, sec
         const form = await req.formData(), file = form.get("file");
         if (!(file instanceof File) || file.size > 5_000_000 || file.size < 1 || !["image/png","image/jpeg","image/webp"].includes(file.type)) return bad("Upload a PNG, JPEG or WebP image under 5 MB");
         const extension = { "image/png":".png", "image/jpeg":".jpg", "image/webp":".webp" }[file.type];
-        const filename = randomBytes(16).toString("hex") + extension;
+        const filename = randomHex(16) + extension;
         await Bun.write(join(uploadDir, filename), file);
         return json({ url: "/uploads/" + filename }, 201);
       }
