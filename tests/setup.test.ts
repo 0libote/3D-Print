@@ -10,12 +10,12 @@ let child: ReturnType<typeof Bun.spawn>;
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "printroom-setup-test-"));
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
-  port = reservation.port;
+  port = reservation.port!;
   reservation.stop(true);
   child = Bun.spawn([process.execPath, "run", resolve("server/index.ts")], {
     env: { ...process.env, DATA_DIR: dataDir, PORT: String(port) },
     stdout: "ignore",
-    stderr: "ignore"
+    stderr: "ignore",
   });
 
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -35,12 +35,19 @@ afterAll(async () => {
 });
 
 test("concurrent first-time setup creates only one owner", async () => {
-  const setup = (username: string) => fetch(`http://localhost:${port}/api/setup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "Studio owner", username, password: "test-password" })
-  });
+  const setup = (username: string) =>
+    fetch(`http://localhost:${port}/api/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Studio owner",
+        username,
+        password: "test-password",
+      }),
+    });
 
   const responses = await Promise.all([setup("owner-one"), setup("owner-two")]);
-  expect(responses.map(response => response.status).sort()).toEqual([201, 409]);
+  expect(responses.map((response) => response.status).sort()).toEqual([
+    201, 409,
+  ]);
 });
