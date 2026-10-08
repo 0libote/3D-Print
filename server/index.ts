@@ -1,8 +1,7 @@
 import { featureDefaults } from "../shared/features";
 import { Database } from "bun:sqlite";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
-import { randomBytes, createHash } from "node:crypto";
 import webpush from "web-push";
 import { orderStatus } from "../shared/order-progress.ts";
 import { migrateProduction } from "./migrations";
@@ -180,7 +179,11 @@ const run = (sql: string, ...params: any[]) => db.query(sql).run(...params);
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
 const hash = (value: string) =>
-  createHash("sha256").update(value).digest("hex");
+  new Bun.CryptoHasher("sha256").update(value).digest("hex");
+const randomHex = (bytes: number) =>
+  Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 const hashPassword = async (password: unknown) => {
   if (
     typeof password !== "string" ||
@@ -328,16 +331,23 @@ function notify(
     console.error("Notification failed:", error),
   );
 }
+function sessionToken(req: Request) {
+  return new Bun.CookieMap(req.headers.get("cookie") ?? "").get("session");
+}
 function cookie(req: Request, token: string, maxAge: number) {
   const secure =
     new URL(req.url).protocol === "https:" ||
     req.headers.get("x-forwarded-proto") === "https";
-  return `session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+  return new Bun.Cookie("session", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge,
+    secure,
+  }).serialize();
 }
 function userFrom(req: Request) {
-  const token = req.headers
-    .get("cookie")
-    ?.match(/(?:^|; )session=([^;]+)/)?.[1];
+  const token = sessionToken(req);
   if (!token) return null;
   return one(
     "SELECT users.id, users.name, users.username, users.is_admin FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>datetime('now')",
@@ -575,18 +585,6 @@ function checkDeadlineReminders() {
   }
   if (changed) broadcastChange();
 }
-const mime: Record<string, string> = {
-  ".html": "text/html",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".ico": "image/x-icon",
-  ".webmanifest": "application/manifest+json",
-};
 const port = Number(process.env.PORT || 3000);
 const liveClients = new Map<
   ReadableStreamDefaultController<Uint8Array>,
@@ -661,17 +659,11 @@ async function handleRequest(
       return bad("Not found", 404);
     if (path.startsWith("/uploads/") && !userFrom(req))
       return bad("Please sign in", 401);
-    const selected = existsSync(file)
-      ? file
-      : root.endsWith("dist") && !extname(path)
-        ? join(root, "index.html")
-        : "";
-    if (!selected || !existsSync(selected)) return bad("Not found", 404);
-    return new Response(Bun.file(selected), {
-      headers: {
-        "Content-Type": mime[extname(selected)] || "application/octet-stream",
-      },
-    });
+    let selected = Bun.file(file);
+    if (!(await selected.exists()) && root.endsWith("dist") && !extname(path))
+      selected = Bun.file(join(root, "index.html"));
+    if (!(await selected.exists())) return bad("Not found", 404);
+    return new Response(selected);
   }
   if (req.method !== "GET") {
     const origin = req.headers.get("origin");
@@ -750,14 +742,14 @@ async function handleRequest(
         login = username(b.username);
       const password = b.password;
       const passwordHash = await hashPassword(password);
-      const token = randomBytes(32).toString("hex");
+      const token = randomHex(32);
       const created = db.transaction(() => {
         if (one("SELECT id FROM users LIMIT 1")) return false;
         const result = run(
           "INSERT INTO users (name,username,email,password_hash,is_admin) VALUES (?,?,?,?,1)",
           name,
           login,
-          `user-${randomBytes(12).toString("hex")}@local.invalid`,
+          `user-${randomHex(12)}@local.invalid`,
           passwordHash,
         );
         run(
@@ -791,7 +783,7 @@ async function handleRequest(
         !(await verifyPassword(String(b.password ?? ""), user.password_hash))
       )
         return bad("Incorrect username or password", 401);
-      const token = randomBytes(32).toString("hex");
+      const token = randomHex(32);
       run(
         "INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))",
         hash(token),
@@ -805,9 +797,7 @@ async function handleRequest(
       });
     }
     if (path === "/api/logout" && req.method === "POST") {
-      const token = req.headers
-        .get("cookie")
-        ?.match(/(?:^|; )session=([^;]+)/)?.[1];
+      const token = sessionToken(req);
       if (token) run("DELETE FROM sessions WHERE token_hash=?", hash(token));
       return new Response(JSON.stringify({ ok: true }), {
         headers: {
@@ -835,9 +825,7 @@ async function handleRequest(
       )
         return bad("Current password is incorrect", 401);
       const passwordHash = await hashPassword(b.password);
-      const token = req.headers
-        .get("cookie")
-        ?.match(/(?:^|; )session=([^;]+)/)?.[1];
+      const token = sessionToken(req);
       db.transaction(() => {
         run(
           "UPDATE users SET password_hash=? WHERE id=?",
@@ -979,7 +967,7 @@ async function handleRequest(
         "INSERT INTO users (name,username,email,password_hash) VALUES (?,?,?,?)",
         required(b.name, "Name", 100),
         login,
-        `user-${randomBytes(12).toString("hex")}@local.invalid`,
+        `user-${randomHex(12)}@local.invalid`,
         await hashPassword(password),
       );
       return json({ ok: true }, 201);
@@ -1000,9 +988,7 @@ async function handleRequest(
           targetId,
         );
         if (targetId === currentUser.id) {
-          const token = req.headers
-            .get("cookie")
-            ?.match(/(?:^|; )session=([^;]+)/)?.[1];
+          const token = sessionToken(req);
           run(
             "DELETE FROM sessions WHERE user_id=? AND token_hash<>?",
             targetId,
@@ -1409,7 +1395,7 @@ async function handleRequest(
       )
         return bad("Upload a PNG, JPEG or WebP image under 5 MB");
       const extension = await imageExtension(file);
-      const filename = randomBytes(16).toString("hex") + extension;
+      const filename = randomHex(16) + extension;
       await Bun.write(join(uploadDir, filename), file);
       return json({ url: "/uploads/" + filename }, 201);
     }
