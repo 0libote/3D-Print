@@ -17,7 +17,12 @@ type Result = {
   next: number | null;
   counts: Record<Filter, number>;
 };
-type Api = (path: string, method?: string, value?: unknown) => Promise<any>;
+type Api = (
+  path: string,
+  method?: string,
+  value?: unknown,
+  query?: Record<string, string | number>,
+) => Promise<any>;
 export function OrdersBrowser({
   api,
   revision,
@@ -36,13 +41,13 @@ export function OrdersBrowser({
     [result, setResult] = useState<Result | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
-  const path = `/orders?filter=${filter}&q=${encodeURIComponent(query)}`;
+
   useEffect(() => {
     let cancelled = false;
     setBusy(true);
     setError("");
     const timer = setTimeout(() => {
-      void api(path)
+      void api("/orders", "GET", undefined, { filter, q: query })
         .then((next: Result) => {
           if (!cancelled) setResult(next);
         })
@@ -57,12 +62,16 @@ export function OrdersBrowser({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [path, revision]);
+  }, [filter, query, revision]);
   async function more() {
     if (!result?.next) return;
     setBusy(true);
     try {
-      const next: Result = await api(`${path}&before=${result.next}`);
+      const next: Result = await api("/orders", "GET", undefined, {
+        filter,
+        q: query,
+        before: result.next,
+      });
       setResult({ ...next, orders: [...result.orders, ...next.orders] });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Load failed");
@@ -73,10 +82,17 @@ export function OrdersBrowser({
   async function exportAll() {
     setBusy(true);
     try {
-      let next: Result = await api(path);
+      let next: Result = await api("/orders", "GET", undefined, {
+        filter,
+        q: query,
+      });
       const orders = [...next.orders];
       while (next.next) {
-        next = await api(`${path}&before=${next.next}`);
+        next = await api("/orders", "GET", undefined, {
+          filter,
+          q: query,
+          before: next.next,
+        });
         orders.push(...next.orders);
       }
       exportOrders(orders);

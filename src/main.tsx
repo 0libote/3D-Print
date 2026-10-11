@@ -186,8 +186,16 @@ function Deadline({ order }: { order: Order }) {
 const styles = stylex.create({
   brand: { letterSpacing: "-0.045em", fontWeight: 800 },
 });
-async function api(path: string, method = "GET", value?: unknown) {
-  const res = await fetch(apiPath(path), {
+async function api(
+  path: string,
+  method = "GET",
+  value?: unknown,
+  query?: Record<string, string | number>,
+) {
+  const url = new URL(apiPath(path), window.location.origin);
+  for (const [key, value] of Object.entries(query || {}))
+    url.searchParams.set(key, String(value));
+  const res = await fetch(url, {
     method,
     credentials: "same-origin",
     headers:
