@@ -1,3 +1,4 @@
+import { apiPath } from "../shared/api-path";
 import { FeaturesContext, useFeatures } from "./Features";
 import { featureDefaults, type Features } from "../shared/features";
 import React, { useEffect, useState, useRef } from "react";
@@ -186,12 +187,7 @@ const styles = stylex.create({
   brand: { letterSpacing: "-0.045em", fontWeight: 800 },
 });
 async function api(path: string, method = "GET", value?: unknown) {
-  if (
-    !/^\/[a-z0-9/-]+(?:\?[a-z0-9=&%+_-]*)?$/i.test(path) ||
-    path.includes("..")
-  )
-    throw new Error("Invalid API path");
-  const res = await fetch("/api" + path, {
+  const res = await fetch(apiPath(path), {
     method,
     credentials: "same-origin",
     headers:
