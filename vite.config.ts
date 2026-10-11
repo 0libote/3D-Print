@@ -12,7 +12,11 @@ export default defineConfig({
       name: "version-service-worker",
       writeBundle(options, bundle) {
         const buildId = createHash("sha256")
-          .update(Object.keys(bundle).sort().join("|"))
+          .update(
+            Object.keys(bundle)
+              .sort((a, b) => a.localeCompare(b))
+              .join("|"),
+          )
           .digest("hex")
           .slice(0, 16);
         const path = `${options.dir || "dist"}/sw.js`;

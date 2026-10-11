@@ -176,6 +176,7 @@ export function JobHistory({
               </span>
               {job.order_id && (
                 <button
+                  type="button"
                   className="text-button"
                   onClick={() => onOpen(job.order_id!)}
                 >
@@ -196,6 +197,7 @@ export function JobHistory({
         )}
         {jobs.length >= 100 && !done && (
           <button
+            type="button"
             className="outline-button"
             disabled={loading}
             onClick={loadOlder}
@@ -327,7 +329,7 @@ export function OrderOperations({
           })[c]!,
       );
     const content = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Order #${order.id} packing slip</title><style>body{font:16px system-ui;max-width:760px;margin:40px auto;padding:20px}table{width:100%;border-collapse:collapse}td,th{padding:12px;text-align:left;border-bottom:1px solid #ddd}p{white-space:pre-wrap}@media print{button{display:none}body{margin:0}}</style><h1>Printroom · Order #${order.id}</h1><p>${escape(order.customer)}
-${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p><table><thead><tr><th>Quantity</th><th>Product</th><th>Filament</th></tr></thead><tbody>${order.items.map((i) => `<tr><td>${i.quantity}</td><td>${escape(i.product_name)}</td><td>${escape(i.filament_name || "—")}</td></tr>`).join("")}</tbody></table><p>${escape(order.notes)}</p><button onclick="window.print()">Print packing slip</button></html>`;
+${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p><table><thead><tr><th>Quantity</th><th>Product</th><th>Filament</th></tr></thead><tbody>${order.items.map((i) => `<tr><td>${i.quantity}</td><td>${escape(i.product_name)}</td><td>${escape(i.filament_name || "—")}</td></tr>`).join("")}</tbody></table><p>${escape(order.notes)}</p><button type="button" onclick="window.print()">Print packing slip</button></html>`;
     download(`order-${order.id}-packing-slip.html`, content, "text/html");
   }
   return (
@@ -364,7 +366,11 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
               ))}
             </select>
           </label>
-          <button className="outline-button" onClick={packingSlip}>
+          <button
+            type="button"
+            className="outline-button"
+            onClick={packingSlip}
+          >
             Download packing slip
           </button>
           {!order.cancelled && !order.archived && ready.length > 0 && (
@@ -420,6 +426,7 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
                 />
               </label>
               <button
+                type="submit"
                 className="auth-submit"
                 disabled={busy || !selected.length}
               >
@@ -445,6 +452,7 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
       <div className="settings-actions">
         {order.cancelled || order.archived ? (
           <button
+            type="button"
             disabled={busy}
             className="outline-button"
             onClick={() => change("restore")}
@@ -453,6 +461,7 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
           </button>
         ) : (
           <button
+            type="button"
             disabled={busy}
             className="danger-text"
             onClick={() => {
@@ -467,15 +476,17 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
             Cancel order
           </button>
         )}
-        {!order.archived && (order.cancelled || order.status === "shipped") && (
-          <button
-            disabled={busy}
-            className="outline-button"
-            onClick={() => change("archive")}
-          >
-            Archive order
-          </button>
-        )}
+        {!order.archived &&
+          (!!order.cancelled || order.status === "shipped") && (
+            <button
+              type="button"
+              disabled={busy}
+              className="outline-button"
+              onClick={() => change("archive")}
+            >
+              Archive order
+            </button>
+          )}
       </div>
     </section>
   );
@@ -666,7 +677,7 @@ export function AccountPassword({ api }: { api: Api }) {
             onChange={(e) => setAgain(e.target.value)}
           />
         </label>
-        <button disabled={busy} className="auth-submit">
+        <button type="submit" disabled={busy} className="auth-submit">
           Change password
         </button>
         <p role="status">{message}</p>

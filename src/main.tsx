@@ -186,6 +186,11 @@ const styles = stylex.create({
   brand: { letterSpacing: "-0.045em", fontWeight: 800 },
 });
 async function api(path: string, method = "GET", value?: unknown) {
+  if (
+    !/^\/[a-z0-9/-]+(?:\?[a-z0-9=&%+_-]*)?$/i.test(path) ||
+    path.includes("..")
+  )
+    throw new Error("Invalid API path");
   const res = await fetch("/api" + path, {
     method,
     credentials: "same-origin",
@@ -447,6 +452,7 @@ function App() {
           <nav>
             {tabs.map((tab) => (
               <button
+                type="button"
                 key={tab.id}
                 data-page={tab.id}
                 aria-label={tab.label}
@@ -473,7 +479,7 @@ function App() {
                 <strong>{data.user.name}</strong>
                 <small>{data.user.username}</small>
               </span>
-              <button title="Sign out" onClick={signOut}>
+              <button type="button" title="Sign out" onClick={signOut}>
                 <LogOut size={18} />
               </button>
             </div>
@@ -548,6 +554,7 @@ function App() {
                       <h2>Print queue</h2>
                     </div>
                     <button
+                      type="button"
                       className="text-button"
                       onClick={() => setPage("queue")}
                     >
@@ -569,6 +576,7 @@ function App() {
                       <h2>Recent orders</h2>
                     </div>
                     <button
+                      type="button"
                       className="text-button"
                       onClick={() => setPage("orders")}
                     >
@@ -578,6 +586,7 @@ function App() {
                   <div className="recent-list">
                     {data.orders.slice(0, 5).map((order) => (
                       <button
+                        type="button"
                         key={order.id}
                         onClick={() => openOrder(order.id)}
                       >
@@ -632,6 +641,7 @@ function App() {
                 <div className="filter-tabs">
                   {(["all", "queued", "printing"] as const).map((stage) => (
                     <button
+                      type="button"
                       key={stage}
                       className={queueFilter === stage ? "selected" : ""}
                       onClick={() => setQueueFilter(stage)}
@@ -719,11 +729,14 @@ function App() {
                   onOrderWork={(work) => void action(work, false)}
                   onDeleteItem={(itemId) => {
                     if (confirm("Remove this item?"))
-                      action(() => api(`/items/${itemId}`, "DELETE"), false);
+                      void action(
+                        () => api(`/items/${itemId}`, "DELETE"),
+                        false,
+                      );
                   }}
                   onDelete={() => {
                     if (confirm("Delete this order and all its items?"))
-                      action(async () => {
+                      void action(async () => {
                         await api(`/orders/${chosen.id}`, "DELETE");
                         setSelectedOrder(null);
                       }, false);
@@ -829,6 +842,7 @@ function App() {
                               </div>
                               {!!product.archived && (
                                 <button
+                                  type="button"
                                   className="outline-button"
                                   disabled={busy}
                                   onClick={() =>
@@ -847,6 +861,7 @@ function App() {
                                 </button>
                               )}
                               <button
+                                type="button"
                                 className="icon-button"
                                 title="Edit product"
                                 aria-label={`Edit product ${product.name}`}
@@ -994,6 +1009,7 @@ function App() {
                           </div>
                           {!!filament.archived && (
                             <button
+                              type="button"
                               className="outline-button"
                               disabled={busy}
                               onClick={() =>
@@ -1012,6 +1028,7 @@ function App() {
                             </button>
                           )}
                           <button
+                            type="button"
                             className="icon-button"
                             title="Edit filament"
                             onClick={() =>
@@ -1074,6 +1091,7 @@ function App() {
                       </span>
                       <div className="team-actions">
                         <button
+                          type="button"
                           className="outline-button"
                           onClick={() =>
                             setDialog({ type: "password", value: user })
@@ -1083,6 +1101,7 @@ function App() {
                         </button>
                         {user.id !== data.user!.id && (
                           <button
+                            type="button"
                             className="danger-text"
                             onClick={() => {
                               if (
@@ -1127,6 +1146,7 @@ function App() {
                 </h2>
               </div>
               <button
+                type="button"
                 className="icon-button"
                 onClick={() => setDialog(null)}
                 aria-label="Close"
@@ -1171,7 +1191,7 @@ function App() {
                             "Archive this filament? Existing orders keep their details.",
                           )
                         )
-                          action(() =>
+                          void action(() =>
                             api(`/filaments/${dialog.value!.id}`, "DELETE"),
                           );
                       }
@@ -1205,7 +1225,7 @@ function App() {
                             "Archive this product? Existing orders keep their details.",
                           )
                         )
-                          action(() =>
+                          void action(() =>
                             api(`/products/${dialog.value!.id}`, "DELETE"),
                           );
                       }
@@ -1268,6 +1288,7 @@ function App() {
           <div className="update-notice" role="status">
             An update is ready.{" "}
             <button
+              type="button"
               disabled={busy}
               onClick={() => {
                 navigator.serviceWorker.addEventListener(
@@ -1285,7 +1306,7 @@ function App() {
         {error && !dialog && (
           <div className="toast" role="alert">
             {error}
-            <button onClick={() => setError("")}>
+            <button type="button" onClick={() => setError("")}>
               <X size={16} />
             </button>
           </div>
@@ -1330,6 +1351,7 @@ function ActivityList({
           </div>
           {onOpen && entry.order_id && (
             <button
+              type="button"
               className="text-button"
               onClick={() => onOpen(entry.order_id!)}
             >
@@ -1398,7 +1420,7 @@ function OrderDetail({
   );
   return (
     <div className="order-detail-page">
-      <button className="back-link" onClick={onBack}>
+      <button type="button" className="back-link" onClick={onBack}>
         <ArrowLeft size={18} /> All orders
       </button>
       <div className="order-detail-heading">
@@ -1420,7 +1442,7 @@ function OrderDetail({
           </div>
         </div>
         <div className="detail-heading-actions">
-          <button className="outline-button" onClick={onEdit}>
+          <button type="button" className="outline-button" onClick={onEdit}>
             <Pencil size={16} /> Edit details
           </button>
           {!!order.is_draft && (
@@ -1482,6 +1504,7 @@ function OrderDetail({
                 </p>
               </div>
               <button
+                type="button"
                 className="text-button"
                 disabled={busy || !!order.cancelled || !!order.archived}
                 onClick={onAddItem}
@@ -1527,6 +1550,7 @@ function OrderDetail({
                       </strong>
                     )}
                     <button
+                      type="button"
                       className="icon-button"
                       title="Edit item"
                       disabled={busy || !!order.cancelled || !!order.archived}
@@ -1535,6 +1559,7 @@ function OrderDetail({
                       <Pencil size={17} />
                     </button>
                     <button
+                      type="button"
                       className="icon-button"
                       title="Remove item"
                       disabled={busy || !!order.cancelled || !!order.archived}
@@ -1569,7 +1594,11 @@ function OrderDetail({
             </div>
             <ActivityList entries={activity} />
             {activity.length >= 50 && (
-              <button className="outline-button" onClick={onMoreActivity}>
+              <button
+                type="button"
+                className="outline-button"
+                onClick={onMoreActivity}
+              >
                 Load older activity
               </button>
             )}
@@ -1580,7 +1609,7 @@ function OrderDetail({
             <span className="eyebrow">CUSTOMER</span>
             <h2>{order.customer}</h2>
             <p>{order.contact || "No contact details added"}</p>
-            <button className="text-button" onClick={onEdit}>
+            <button type="button" className="text-button" onClick={onEdit}>
               Edit customer <ArrowRight size={15} />
             </button>
           </section>
@@ -1646,7 +1675,12 @@ function OrderDetail({
             onWork={onOrderWork}
           />
           {!!order.is_draft && (
-            <button className="delete-order" disabled={busy} onClick={onDelete}>
+            <button
+              type="button"
+              className="delete-order"
+              disabled={busy}
+              onClick={onDelete}
+            >
               <Trash2 size={17} /> Delete draft
             </button>
           )}
@@ -1738,7 +1772,7 @@ function Auth({
               {error}
             </p>
           )}
-          <button className="auth-submit" disabled={busy}>
+          <button type="submit" className="auth-submit" disabled={busy}>
             {busy ? "Please wait…" : setup ? "Create studio" : "Sign in"}{" "}
             <ArrowRight size={17} />
           </button>
@@ -1884,7 +1918,7 @@ function OrderForm({
         />
       </Field>
       <div className="form-actions">
-        <button className="auth-submit" disabled={busy}>
+        <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Saving…" : value ? "Save changes" : "Create draft"}{" "}
           <ArrowRight size={16} />
         </button>
@@ -2088,7 +2122,11 @@ function FilamentForm({
             Archive filament
           </button>
         )}
-        <button className="auth-submit" disabled={busy || uploading}>
+        <button
+          type="submit"
+          className="auth-submit"
+          disabled={busy || uploading}
+        >
           {busy ? "Saving…" : value ? "Save changes" : "Add filament"}{" "}
           <ArrowRight size={16} />
         </button>
@@ -2245,7 +2283,11 @@ function ProductForm({
             Archive product
           </button>
         )}
-        <button className="auth-submit" disabled={busy || uploading}>
+        <button
+          type="submit"
+          className="auth-submit"
+          disabled={busy || uploading}
+        >
           {busy ? "Saving…" : value ? "Save changes" : "Add product"}{" "}
           <ArrowRight size={16} />
         </button>
@@ -2381,7 +2423,7 @@ function ItemForm({
             </>
           )}
           <div className="form-actions">
-            <button className="auth-submit" disabled={busy}>
+            <button type="submit" className="auth-submit" disabled={busy}>
               {busy ? "Saving…" : value ? "Save item" : "Add to order"}{" "}
               <ArrowRight size={16} />
             </button>
@@ -2699,6 +2741,7 @@ function SettingsPanel({
           )}
           {data.user?.is_admin ? (
             <button
+              type="button"
               className="auth-submit settings-save"
               disabled={busy}
               onClick={() =>
@@ -2743,6 +2786,7 @@ function SettingsPanel({
           <div className="settings-actions">
             {subscribed ? (
               <button
+                type="button"
                 className="outline-button"
                 disabled={busy}
                 onClick={disable}
@@ -2750,12 +2794,18 @@ function SettingsPanel({
                 Turn off on this device
               </button>
             ) : (
-              <button className="auth-submit" disabled={busy} onClick={enable}>
+              <button
+                type="button"
+                className="auth-submit"
+                disabled={busy}
+                onClick={enable}
+              >
                 Set up notifications
               </button>
             )}
             {subscribed && (
               <button
+                type="button"
                 className="outline-button"
                 disabled={busy}
                 onClick={() =>
@@ -2801,20 +2851,28 @@ function SettingsPanel({
             </div>
           </div>
           <div className="settings-actions">
-            <button className="outline-button" onClick={onProducts}>
+            <button
+              type="button"
+              className="outline-button"
+              onClick={onProducts}
+            >
               Manage products
             </button>
             {!!data.user?.is_admin && (
-              <button className="outline-button" onClick={onTeam}>
+              <button type="button" className="outline-button" onClick={onTeam}>
                 Manage team
               </button>
             )}
             {data.settings.production_tools && (
-              <button className="outline-button" onClick={onJobs}>
+              <button type="button" className="outline-button" onClick={onJobs}>
                 Print history
               </button>
             )}
-            <button className="outline-button" onClick={onSignOut}>
+            <button
+              type="button"
+              className="outline-button"
+              onClick={onSignOut}
+            >
               Sign out
             </button>
           </div>
@@ -2879,7 +2937,7 @@ function UserForm({
         Share the password with this person so they can sign in.
       </p>
       <div className="form-actions">
-        <button className="auth-submit" disabled={busy}>
+        <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Adding…" : "Add user"}
           <ArrowRight size={16} />
         </button>
@@ -2949,7 +3007,7 @@ function PasswordForm({
         </p>
       )}
       <div className="form-actions">
-        <button className="auth-submit" disabled={busy}>
+        <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Saving…" : "Change password"}
           <ArrowRight size={16} />
         </button>

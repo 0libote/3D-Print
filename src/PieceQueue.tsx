@@ -35,9 +35,16 @@ export function PieceQueue({
   mode = "print",
 }: Props) {
   const features = useFeatures();
-  const [printer, setPrinter] = useState(
-    () => localStorage.getItem("printroom-printer") || "Studio printer",
-  );
+  const [printer, setPrinter] = useState(() => {
+    try {
+      const saved = localStorage.getItem("printroom-printer");
+      return saved && /^[\p{L}\p{N} ._()-]{1,100}$/u.test(saved)
+        ? saved
+        : "Studio printer";
+    } catch {
+      return "Studio printer";
+    }
+  });
   const [weights, setWeights] = useState<Record<number, string>>({});
   const [limit, setLimit] = useState(50);
   return (
@@ -52,7 +59,13 @@ export function PieceQueue({
               maxLength={100}
               onChange={(e) => {
                 setPrinter(e.target.value);
-                localStorage.setItem("printroom-printer", e.target.value);
+                if (/^[\p{L}\p{N} ._()-]{0,100}$/u.test(e.target.value)) {
+                  try {
+                    localStorage.setItem("printroom-printer", e.target.value);
+                  } catch {
+                    // Printer selection still works when storage is unavailable.
+                  }
+                }
               }}
             />
           </label>
@@ -103,7 +116,11 @@ export function PieceQueue({
                   </a>
                 )}
               </div>
-              <button className="print-order" onClick={() => onOpen(order.id)}>
+              <button
+                type="button"
+                className="print-order"
+                onClick={() => onOpen(order.id)}
+              >
                 #{String(order.id).padStart(4, "0")} · {order.customer}
                 {order.ship_by && (
                   <small className="piece-deadline">
@@ -123,6 +140,7 @@ export function PieceQueue({
                 </span>
                 {piece.status === "queued" && (
                   <button
+                    type="button"
                     className="progress-button"
                     disabled={busy || !!activePieceId}
                     onClick={() => onAction(entry, "start", printer)}
@@ -154,6 +172,7 @@ export function PieceQueue({
                       </label>
                     )}
                     <button
+                      type="button"
                       className="auth-submit"
                       disabled={busy}
                       onClick={() =>
@@ -169,6 +188,7 @@ export function PieceQueue({
                       Complete piece
                     </button>
                     <button
+                      type="button"
                       className="outline-button"
                       disabled={busy}
                       onClick={() => {
@@ -188,6 +208,7 @@ export function PieceQueue({
                       Failed · requeue
                     </button>
                     <button
+                      type="button"
                       className="text-button"
                       disabled={busy}
                       onClick={() => onAction(entry, "stop")}
@@ -199,6 +220,7 @@ export function PieceQueue({
                 {piece.status === "printed" && (
                   <>
                     <button
+                      type="button"
                       className="progress-button"
                       disabled={busy}
                       onClick={() => onAction(entry, "ship")}
@@ -206,6 +228,7 @@ export function PieceQueue({
                       <Truck size={14} /> Ship piece
                     </button>
                     <button
+                      type="button"
                       className="text-button"
                       disabled={busy}
                       onClick={() => {
@@ -228,6 +251,7 @@ export function PieceQueue({
       )}
       {entries.length > limit && (
         <button
+          type="button"
           className="outline-button queue-more"
           onClick={() => setLimit(limit + 50)}
         >
