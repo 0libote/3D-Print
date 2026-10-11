@@ -48,6 +48,17 @@ jobs:
       - name: Build frontend
         run: bun run build
 
+      - name: Smoke test production container
+        run: |
+          docker build -t printroom-ci .
+          docker run -d --name printroom-ci -p 3000:3000 printroom-ci
+          trap 'docker logs printroom-ci; docker rm -f printroom-ci' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:3000/healthz; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
   container:
     if: github.event_name != 'pull_request'
     permissions:
