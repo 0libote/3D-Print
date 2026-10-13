@@ -646,8 +646,7 @@ async function handleRequest(
 ): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
-  if (path === "/healthz") return json({ ok: one("SELECT 1 AS ok")?.ok === 1 });
-  if (!path.startsWith("/api/")) {
+  if (!path.startsWith("/api/") && path !== "/healthz") {
     const root = path.startsWith("/uploads/")
       ? resolve(uploadDir)
       : resolve("./dist");
@@ -675,6 +674,15 @@ async function handleRequest(
       return bad("Invalid request origin", 403);
   }
   try {
+    if (path === "/healthz") {
+      try {
+        const ok = one("SELECT 1 AS ok")?.ok === 1;
+        if (!ok) return json({ ok: false }, 503);
+        return json({ ok: true });
+      } catch {
+        return json({ ok: false }, 503);
+      }
+    }
     if (path === "/api/bootstrap" && req.method === "GET") {
       const user = userFrom(req);
       return json({
@@ -1444,6 +1452,7 @@ async function handleRequest(
       const orderId = id(order[1]),
         existing = one("SELECT * FROM orders WHERE id=?", orderId);
       if (!existing) return bad("Order not found", 404);
+      writableOrder(orderId);
       expectVersion("orders", orderId, b.version);
       const deadline = shipBy(b.ship_by);
       run(
@@ -1485,13 +1494,19 @@ async function handleRequest(
         existing.status !== "shipped"
       )
         return bad("Ship or cancel this order before archiving", 409);
-      run(
-        "UPDATE orders SET cancelled=?,archived=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      if (b.action === "cancel" && existing.status === "shipped")
+        return bad("Shipped orders cannot be cancelled", 409);
+      const nextCancelled =
         b.action === "cancel"
           ? 1
           : b.action === "restore"
-            ? 0
-            : existing.cancelled,
+            ? existing.archived
+              ? existing.cancelled
+              : 0
+            : existing.cancelled;
+      run(
+        "UPDATE orders SET cancelled=?,archived=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        nextCancelled,
         b.action === "archive" ? 1 : 0,
         orderId,
       );
@@ -1599,10 +1614,12 @@ async function handleRequest(
         return bad("Add at least one print item before confirming this sale");
       writableOrder(orderId);
       db.transaction(() => {
-        run(
-          "UPDATE orders SET is_draft=0,version=version+1,confirmed_at=CURRENT_TIMESTAMP,status='new',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        const updated = run(
+          "UPDATE orders SET is_draft=0,version=version+1,confirmed_at=CURRENT_TIMESTAMP,status='new',updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_draft=1",
           orderId,
         );
+        if (!updated.changes)
+          throw new RequestError("This order is already confirmed", 409);
         for (const item of all(
           "SELECT * FROM order_items WHERE order_id=?",
           orderId,
@@ -1638,13 +1655,15 @@ async function handleRequest(
           "Cancel or archive confirmed orders to preserve history",
           409,
         );
-      activity(
-        currentUser,
-        orderId,
-        "order_deleted",
-        `Deleted draft #${orderId}.`,
-      );
-      run("DELETE FROM orders WHERE id=?", orderId);
+      db.transaction(() => {
+        activity(
+          currentUser,
+          orderId,
+          "order_deleted",
+          `Deleted draft #${orderId}.`,
+        );
+        run("DELETE FROM orders WHERE id=?", orderId);
+      })();
       return json({ ok: true });
     }
     const items = path.match(/^\/api\/orders\/(\d+)\/items$/);
@@ -1654,50 +1673,52 @@ async function handleRequest(
       writableOrder(orderId);
       const { productId, product, filamentId, filament } = itemProduct(b);
       const count = quantity(b.quantity, "Quantity", 1, 10000);
-      run(
-        "INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price,status) VALUES (?,?,?,?,?,?,?,?,?)",
-        orderId,
-        productId,
-        product.name,
-        filamentId,
-        filament?.name ?? "",
-        filament?.color ?? "#adb5bd",
-        count,
-        product.price,
-        "queued",
-      );
-      const itemId = Number(one("SELECT last_insert_rowid() AS id")!.id);
-      run(
-        "UPDATE order_items SET grams_per_piece=?,minutes_per_piece=?,production_url=?,revision=?,print_profile=? WHERE id=?",
-        product.grams_per_piece,
-        product.minutes_per_piece,
-        product.production_url,
-        product.revision,
-        product.print_profile,
-        itemId,
-      );
-      run(
-        "UPDATE order_items SET cost_per_kg=? WHERE id=?",
-        filament?.cost_per_kg ?? 0,
-        itemId,
-      );
-      workshop.reconcile(itemId, {
-        quantity: count,
-        printed_quantity: 0,
-        shipped_quantity: 0,
-        status: "queued",
-      });
-      activity(
-        currentUser,
-        orderId,
-        "item_added",
-        `Added ${count} × ${product.name}${filament ? ` in ${filament.name}` : ""}.`,
-      );
-      updateOrderStatus(orderId);
-      run(
-        "UPDATE orders SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        orderId,
-      );
+      db.transaction(() => {
+        run(
+          "INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price,status) VALUES (?,?,?,?,?,?,?,?,?)",
+          orderId,
+          productId,
+          product.name,
+          filamentId,
+          filament?.name ?? "",
+          filament?.color ?? "#adb5bd",
+          count,
+          product.price,
+          "queued",
+        );
+        const itemId = Number(one("SELECT last_insert_rowid() AS id")!.id);
+        run(
+          "UPDATE order_items SET grams_per_piece=?,minutes_per_piece=?,production_url=?,revision=?,print_profile=? WHERE id=?",
+          product.grams_per_piece,
+          product.minutes_per_piece,
+          product.production_url,
+          product.revision,
+          product.print_profile,
+          itemId,
+        );
+        run(
+          "UPDATE order_items SET cost_per_kg=? WHERE id=?",
+          filament?.cost_per_kg ?? 0,
+          itemId,
+        );
+        workshop.reconcile(itemId, {
+          quantity: count,
+          printed_quantity: 0,
+          shipped_quantity: 0,
+          status: "queued",
+        });
+        activity(
+          currentUser,
+          orderId,
+          "item_added",
+          `Added ${count} × ${product.name}${filament ? ` in ${filament.name}` : ""}.`,
+        );
+        updateOrderStatus(orderId);
+        run(
+          "UPDATE orders SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          orderId,
+        );
+      })();
       return json({ ok: true }, 201);
     }
     if (/^\/api\/items\/\d+\/(status|progress)$/.test(path))
@@ -1708,8 +1729,18 @@ async function handleRequest(
         itemId = id(item[1]);
       const existing = expectVersion("order_items", itemId, b.version);
       const order = writableOrder(existing.order_id);
-      const productId = b.product_id === null ? null : id(String(b.product_id));
-      const filamentId = b.filament_id ? id(String(b.filament_id)) : null;
+      const productId =
+        b.product_id === null
+          ? null
+          : b.product_id === undefined
+            ? existing.product_id
+            : id(String(b.product_id));
+      const filamentId =
+        b.filament_id === undefined
+          ? existing.filament_id
+          : b.filament_id
+            ? id(String(b.filament_id))
+            : null;
       const sameProduct = productId === existing.product_id;
       const sameFilament = filamentId === existing.filament_id;
       let product = sameProduct ? existing : itemProduct(b).product;
@@ -1757,15 +1788,11 @@ async function handleRequest(
         );
         run(
           "UPDATE order_items SET cost_per_kg=? WHERE id=?",
-          filament?.cost_per_kg ?? 0,
+          sameProduct && sameFilament
+            ? existing.cost_per_kg
+            : (filament?.cost_per_kg ?? 0),
           itemId,
         );
-        if (!sameProduct || !sameFilament)
-          run(
-            "UPDATE order_items SET cost_per_kg=? WHERE id=?",
-            filament?.cost_per_kg ?? 0,
-            itemId,
-          );
         workshop.reconcile(itemId, {
           quantity: count,
           printed_quantity: printed,
@@ -1804,18 +1831,20 @@ async function handleRequest(
         )
       )
         return bad("Stop the active print before removing this item", 409);
-      run("DELETE FROM order_items WHERE id=?", itemId);
-      activity(
-        currentUser,
-        existing.order_id,
-        "item_deleted",
-        `Removed ${existing.product_name} from the order.`,
-      );
-      updateOrderStatus(existing.order_id);
-      run(
-        "UPDATE orders SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        existing.order_id,
-      );
+      db.transaction(() => {
+        run("DELETE FROM order_items WHERE id=?", itemId);
+        activity(
+          currentUser,
+          existing.order_id,
+          "item_deleted",
+          `Removed ${existing.product_name} from the order.`,
+        );
+        updateOrderStatus(existing.order_id);
+        run(
+          "UPDATE orders SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          existing.order_id,
+        );
+      })();
       return json({ ok: true });
     }
     return bad("Not found", 404);

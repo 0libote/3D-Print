@@ -527,3 +527,164 @@ test("basic mode ignores material limits and preserves optional data", async () 
   });
   expect(invalid.status).toBe(400);
 });
+
+test("quantity-only edits preserve material cost", async () => {
+  await api("/settings", "PUT", {
+    currency: "GBP",
+    show_money: true,
+    production_tools: true,
+    material_tracking: true,
+    cost_reporting: true,
+    sales_tools: true,
+  });
+  await api("/filaments", "POST", {
+    name: "Costed",
+    color: "#00ff00",
+    material: "PLA",
+    spool_count: 2,
+    grams_per_spool: 1000,
+    remaining_grams: 2000,
+    cost_per_kg: 30,
+  });
+  const filaments = (await bootstrap()).filaments;
+  const costed = filaments.find((f: any) => f.name === "Costed");
+  await api("/products", "POST", {
+    name: "Costed widget",
+    price: 12,
+    filament_ids: [costed.id],
+    grams_per_piece: 10,
+    minutes_per_piece: 30,
+    revision: "v1",
+  });
+  const product = (await bootstrap()).products.find(
+    (p: any) => p.name === "Costed widget",
+  );
+  const { id } = await api("/orders", "POST", { customer: "Cost test" });
+  await api(`/orders/${id}/items`, "POST", {
+    product_id: product.id,
+    filament_id: costed.id,
+    quantity: 2,
+  });
+  let item = (await bootstrap()).orders.find((o: any) => o.id === id).items[0];
+  expect(item.cost_per_kg).toBe(30);
+  const res = await request(`/items/${item.id}`, "PUT", {
+    quantity: 3,
+    printed_quantity: 0,
+    shipped_quantity: 0,
+    version: item.version,
+  });
+  expect(res.status).toBe(200);
+  item = (await bootstrap()).orders.find((o: any) => o.id === id).items[0];
+  expect(item.quantity).toBe(3);
+  expect(item.cost_per_kg).toBe(30);
+  expect(item.product_name).toBe("Costed widget");
+});
+
+test("double confirmation is rejected", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Double confirm" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  expect((await request(`/orders/${id}/confirm`, "POST", {})).status).toBe(200);
+  expect((await request(`/orders/${id}/confirm`, "POST", {})).status).toBe(409);
+});
+
+test("cancelled orders reject edits", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Cancel guard" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  await api(`/orders/${id}/confirm`, "POST", {});
+  let order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  await api(`/orders/${id}/lifecycle`, "POST", {
+    action: "cancel",
+    version: order.version,
+  });
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(order.status).toBe("cancelled");
+  expect(
+    (
+      await request(`/orders/${id}`, "PUT", {
+        customer: "Mutated",
+        contact: "",
+        notes: "",
+        ship_by: "",
+        version: order.version,
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await request(`/orders/${id}/items`, "POST", {
+        product_id: 1,
+        quantity: 1,
+      })
+    ).status,
+  ).toBe(409);
+});
+
+test("concurrent filament consumption cannot drive stock negative", async () => {
+  await api("/settings", "PUT", {
+    currency: "GBP",
+    show_money: true,
+    production_tools: true,
+    material_tracking: true,
+    cost_reporting: true,
+    sales_tools: true,
+  });
+  await api("/filaments", "POST", {
+    name: "Race",
+    color: "#0000ff",
+    material: "PLA",
+    spool_count: 1,
+    grams_per_spool: 1000,
+    remaining_grams: 20,
+    cost_per_kg: 10,
+  });
+  const filament = (await bootstrap()).filaments.find(
+    (f: any) => f.name === "Race",
+  );
+  await api("/products", "POST", {
+    name: "Race widget",
+    price: 5,
+    filament_ids: [filament.id],
+    grams_per_piece: 10,
+    minutes_per_piece: 5,
+    revision: "v1",
+  });
+  const product = (await bootstrap()).products.find(
+    (p: any) => p.name === "Race widget",
+  );
+  const { id } = await api("/orders", "POST", { customer: "Race" });
+  await api(`/orders/${id}/items`, "POST", {
+    product_id: product.id,
+    filament_id: filament.id,
+    quantity: 2,
+  });
+  await api(`/orders/${id}/confirm`, "POST", {});
+  let order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect((await act(order.items[0].pieces[0], "start")).status).toBe(200);
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect((await act(order.items[0].pieces[0], "complete")).status).toBe(200);
+  let stock = (await bootstrap()).filaments.find(
+    (f: any) => f.id === filament.id,
+  );
+  expect(stock.remaining_grams).toBe(10);
+  expect((await act(order.items[0].pieces[1], "start")).status).toBe(200);
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  const running = order.items[0].pieces[1];
+  const current = (await bootstrap()).filaments.find(
+    (f: any) => f.id === filament.id,
+  );
+  await api(`/filaments/${filament.id}`, "PUT", {
+    ...current,
+    remaining_grams: 5,
+  });
+  const complete = await request(`/pieces/${running.id}/action`, "POST", {
+    action: "complete",
+    version: running.version,
+    printer: "Test printer",
+  });
+  expect(complete.status).toBe(409);
+  stock = (await bootstrap()).filaments.find((f: any) => f.id === filament.id);
+  expect(stock.remaining_grams).toBe(5);
+  expect(stock.remaining_grams).toBeGreaterThanOrEqual(0);
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect((await act(order.items[0].pieces[1], "stop")).status).toBe(200);
+});
