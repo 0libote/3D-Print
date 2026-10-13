@@ -37,9 +37,13 @@ export function Modal({
     document.body.style.top = `-${scrollY}px`;
     document.body.style.width = "100%";
     const main = document.querySelector("main"),
-      sidebar = document.querySelector(".sidebar");
+      sidebar = document.querySelector(".sidebar"),
+      toast = document.querySelector(".toast"),
+      notice = document.querySelector(".update-notice");
     if (main instanceof HTMLElement) main.inert = true;
     if (sidebar instanceof HTMLElement) sidebar.inert = true;
+    if (toast instanceof HTMLElement) toast.inert = true;
+    if (notice instanceof HTMLElement) notice.inert = true;
     const focusable = () =>
       [
         ...dialog.querySelectorAll<HTMLElement>(
@@ -50,7 +54,7 @@ export function Modal({
       focusable().find(
         (e) => e.tagName === "INPUT" || e.tagName === "SELECT",
       ) || dialog
-    ).focus();
+    ).focus({ preventScroll: true });
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !pending.current) {
         e.preventDefault();
@@ -86,6 +90,8 @@ export function Modal({
       document.removeEventListener("keydown", handler);
       if (main instanceof HTMLElement) main.inert = false;
       if (sidebar instanceof HTMLElement) sidebar.inert = false;
+      if (toast instanceof HTMLElement) toast.inert = false;
+      if (notice instanceof HTMLElement) notice.inert = false;
       Object.assign(document.body.style, bodyStyle);
       window.scrollTo(0, scrollY);
       previous?.focus({ preventScroll: true });

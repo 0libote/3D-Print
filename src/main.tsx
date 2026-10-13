@@ -209,8 +209,26 @@ async function api(
           ? value
           : JSON.stringify(value),
   });
-  const result = await res.json();
-  if (!res.ok) throw new Error(result.error || "Request failed");
+  let result: any = null;
+  try {
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      result = await res.json();
+    } else {
+      const text = await res.text();
+      if (text) {
+        try {
+          result = JSON.parse(text);
+        } catch {
+          result = null;
+        }
+      }
+    }
+  } catch {
+    result = null;
+  }
+  if (!res.ok)
+    throw new Error(result?.error || `Request failed (${res.status})`);
   return result;
 }
 function App() {
@@ -220,6 +238,11 @@ function App() {
   const [selectedOrder, setSelectedOrder] = useState<number | null>(null);
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    const heading = document.querySelector("main h1");
+    if (heading instanceof HTMLElement) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }
   }, [page, selectedOrder]);
   const [showArchivedCatalogue, setShowArchivedCatalogue] = useState(false);
   const [catalogueSearch, setCatalogueSearch] = useState("");
@@ -231,6 +254,7 @@ function App() {
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingPiece, setPendingPiece] = useState<string | null>(null);
   const [updateWorker, setUpdateWorker] = useState<ServiceWorker | null>(null);
   const [live, setLive] = useState(false);
   const requestNumber = useRef(0),
@@ -385,18 +409,24 @@ function App() {
     printer = "",
     notes = "",
     actualGrams?: number,
-  ) =>
-    void action(
-      () =>
-        api(`/pieces/${entry.piece.id}/action`, "POST", {
-          action: step,
-          version: entry.piece.version,
-          printer,
-          notes,
-          actual_grams: actualGrams,
-        }),
-      false,
-    );
+  ) => {
+    const key = `${entry.piece.id}:${step}`;
+    if (pendingPiece === key) return;
+    setPendingPiece(key);
+    setError("");
+    void api(`/pieces/${entry.piece.id}/action`, "POST", {
+      action: step,
+      version: entry.piece.version,
+      printer,
+      notes,
+      actual_grams: actualGrams,
+    })
+      .then(() => refresh())
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "Something went wrong"),
+      )
+      .finally(() => setPendingPiece(null));
+  };
   const tabs: {
     id: Page;
     label: string;
@@ -572,6 +602,7 @@ function App() {
                     entries={queue.slice(0, 6)}
                     activePieceId={activePieceId}
                     busy={busy}
+                    pendingKey={pendingPiece}
                     onAction={pieceAction}
                     onOpen={openOrder}
                     emptyText="Confirm a draft sale to add its prints to this queue."
@@ -673,6 +704,7 @@ function App() {
                     )}
                     activePieceId={activePieceId}
                     busy={busy}
+                    pendingKey={pendingPiece}
                     onAction={pieceAction}
                     onOpen={openOrder}
                     emptyText="Confirm a draft sale to add prints here. Each completed piece moves to Ready to ship below."
@@ -694,6 +726,7 @@ function App() {
                     entries={ready}
                     activePieceId={activePieceId}
                     busy={busy}
+                    pendingKey={pendingPiece}
                     onAction={pieceAction}
                     mode="ship"
                     onOpen={openOrder}
@@ -709,6 +742,7 @@ function App() {
                   showMoney={data.settings.show_money}
                   currency={chosen.currency}
                   busy={busy}
+                  pendingKey={pendingPiece}
                   onBack={() => setSelectedOrder(null)}
                   onEdit={() => setDialog({ type: "order", value: chosen })}
                   onAddItem={() => setDialog({ type: "item", order: chosen })}
@@ -1313,7 +1347,11 @@ function App() {
         {error && !dialog && (
           <div className="toast" role="alert">
             {error}
-            <button type="button" onClick={() => setError("")}>
+            <button
+              type="button"
+              aria-label="Dismiss error"
+              onClick={() => setError("")}
+            >
               <X size={16} />
             </button>
           </div>
@@ -1376,6 +1414,7 @@ function OrderDetail({
   showMoney,
   currency,
   busy,
+  pendingKey,
   onBack,
   onEdit,
   onAddItem,
@@ -1393,6 +1432,7 @@ function OrderDetail({
   showMoney: boolean;
   currency: string;
   busy: boolean;
+  pendingKey?: string | null;
   onBack: () => void;
   onEdit: () => void;
   onAddItem: () => void;
@@ -1495,6 +1535,7 @@ function OrderDetail({
                 )}
                 activePieceId={activePieceId}
                 busy={busy}
+                pendingKey={pendingKey}
                 onAction={onAction}
                 onOpen={() => {}}
                 emptyText="All pieces shipped."
@@ -1765,7 +1806,7 @@ function Auth({
           </Field>
           <Field label="Password">
             <input
-              required={setup}
+              required
               maxLength={1024}
               type="password"
               autoComplete={setup ? "new-password" : "current-password"}
@@ -1795,26 +1836,38 @@ function Field({
   label: string;
   children: React.ReactNode;
 }) {
-  const labelId = React.useId();
+  const generatedId = React.useId();
+  let targetId = generatedId;
+  let assigned = false;
   const decorate = (nodes: React.ReactNode): React.ReactNode =>
     React.Children.map(nodes, (child) => {
       if (!React.isValidElement(child)) return child;
       const element = child as React.ReactElement<{
         children?: React.ReactNode;
-        "aria-labelledby"?: string;
+        id?: string;
       }>;
-      if (["input", "select", "textarea"].includes(String(element.type)))
-        return React.cloneElement(element, { "aria-labelledby": labelId });
+      if (
+        ["input", "select", "textarea"].includes(String(element.type)) &&
+        !assigned
+      ) {
+        assigned = true;
+        if (element.props.id) {
+          targetId = element.props.id;
+          return child;
+        }
+        return React.cloneElement(element, { id: generatedId });
+      }
       return element.props.children
         ? React.cloneElement(element, {
             children: decorate(element.props.children),
           })
         : element;
     });
+  const decorated = decorate(children);
   return (
     <div className="field">
-      <span id={labelId}>{label}</span>
-      {decorate(children)}
+      <label htmlFor={targetId}>{label}</label>
+      {decorated}
     </div>
   );
 }
@@ -1894,7 +1947,6 @@ function OrderForm({
       <div className="form-grid">
         <Field label="Customer name">
           <input
-            autoFocus
             required
             value={customer}
             onChange={(e) => setCustomer(e.target.value)}
@@ -1998,7 +2050,6 @@ function FilamentForm({
         <Field label="Colour name">
           <input
             required
-            autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Terracotta"
@@ -2205,7 +2256,6 @@ function ProductForm({
         <Field label="Product name">
           <input
             required
-            autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Desk organiser"
@@ -2915,7 +2965,6 @@ function UserForm({
       <Field label="Name">
         <input
           required
-          autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Alex Maker"

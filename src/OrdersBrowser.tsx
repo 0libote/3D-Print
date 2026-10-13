@@ -120,10 +120,11 @@ export function OrdersBrowser({
             <button
               key={key}
               className={key === filter ? "selected" : ""}
+              aria-pressed={key === filter}
               onClick={() => setFilter(key)}
             >
               {labels[key]}
-              <span>{result?.counts[key] ?? "…"}</span>
+              <span aria-live="polite">{result?.counts[key] ?? "…"}</span>
             </button>
           ))}
         </div>

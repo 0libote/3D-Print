@@ -8,16 +8,28 @@ const SHELL = [
   "/fonts/manrope.woff2",
 ];
 
+const MAX_RUNTIME_ENTRIES = 80;
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE);
-      const page = await fetch("/", { cache: "no-store" });
-      const html = await page.text();
-      const assets = [
-        ...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g),
-      ].map((match) => match[1]);
-      await cache.addAll([...SHELL, ...assets]);
+      let assets = [];
+      try {
+        const page = await fetch("/", { cache: "no-store" });
+        const html = await page.text();
+        assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(
+          (match) => match[1],
+        );
+      } catch {}
+      const urls = [...SHELL, ...assets];
+      await Promise.allSettled(
+        urls.map(async (url) => {
+          try {
+            await cache.add(url);
+          } catch {}
+        }),
+      );
     })(),
   );
 });
@@ -69,10 +81,24 @@ self.addEventListener("fetch", (event) => {
         (cached) =>
           cached ||
           fetch(request).then((response) => {
-            if (response.ok) {
+            if (
+              response.ok &&
+              (SHELL.includes(url.pathname) ||
+                url.pathname.startsWith("/assets/"))
+            ) {
               const copy = response.clone();
               event.waitUntil(
-                caches.open(CACHE).then((cache) => cache.put(request, copy)),
+                caches.open(CACHE).then(async (cache) => {
+                  await cache.put(request, copy);
+                  const keys = await cache.keys();
+                  if (keys.length > MAX_RUNTIME_ENTRIES) {
+                    await Promise.all(
+                      keys
+                        .slice(0, keys.length - MAX_RUNTIME_ENTRIES)
+                        .map((key) => cache.delete(key)),
+                    );
+                  }
+                }),
               );
             }
             return response;
@@ -96,12 +122,21 @@ self.addEventListener("push", (event) => {
     !message.url.startsWith("//")
       ? message.url
       : "/";
+  const orderMatch =
+    typeof url === "string" ? url.match(/[?&]order=(\d+)/) : null;
+  const orderPart =
+    message.order_id ?? orderMatch?.[1] ?? message.orderId ?? "general";
+  const kindPart = message.kind ?? message.title ?? "update";
+  const tag = `printroom-${String(kindPart)}-${String(orderPart)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .slice(0, 100);
   event.waitUntil(
     self.registration.showNotification(message.title, {
       body: message.body,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      tag: "printroom-" + Date.now(),
+      tag,
       data: { url },
     }),
   );
