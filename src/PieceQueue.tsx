@@ -4,12 +4,7 @@ import { Printer, Truck } from "lucide-react";
 import type { PieceEntry } from "../shared/models";
 
 export type PieceAction =
-  | "start"
-  | "complete"
-  | "fail"
-  | "stop"
-  | "ship"
-  | "reprint";
+  "start" | "complete" | "fail" | "stop" | "ship" | "reprint";
 type Props = {
   entries: PieceEntry[];
   activePieceId?: number;

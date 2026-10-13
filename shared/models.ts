@@ -66,12 +66,7 @@ export type Item = ProductionDetails & {
   pieces: Piece[];
 };
 export type Status =
-  | "draft"
-  | "new"
-  | "printing"
-  | "printed"
-  | "shipped"
-  | "cancelled";
+  "draft" | "new" | "printing" | "printed" | "shipped" | "cancelled";
 export type Shipment = {
   id: number;
   carrier: string;

@@ -26,10 +26,9 @@ type Counts = {
 export function production(db: Database) {
   const pieces = (itemId: number) =>
     db
-      .query<
-        Piece,
-        [number]
-      >("SELECT * FROM order_pieces WHERE item_id=? ORDER BY ordinal")
+      .query<Piece, [number]>(
+        "SELECT * FROM order_pieces WHERE item_id=? ORDER BY ordinal",
+      )
       .all(itemId);
   function sync(itemId: number) {
     const rows = pieces(itemId);
@@ -49,17 +48,15 @@ export function production(db: Database) {
       "UPDATE order_items SET printed_quantity=?,shipped_quantity=?,status=?,version=version+1 WHERE id=?",
     ).run(printed, shipped, status, itemId);
     const item = db
-      .query<
-        { order_id: number },
-        [number]
-      >("SELECT order_id FROM order_items WHERE id=?")
+      .query<{ order_id: number }, [number]>(
+        "SELECT order_id FROM order_items WHERE id=?",
+      )
       .get(itemId);
     if (!item) return;
     const states = db
-      .query<
-        { status: ItemStatus },
-        [number]
-      >("SELECT status FROM order_items WHERE order_id=?")
+      .query<{ status: ItemStatus }, [number]>(
+        "SELECT status FROM order_items WHERE order_id=?",
+      )
       .all(item.order_id);
     // Partial completed work also means an order is in progress, even with no active print.
     const aggregate = orderStatus(states.map((s) => s.status));
@@ -130,17 +127,15 @@ export function production(db: Database) {
     return db.transaction(() => {
       const materialTracking =
         db
-          .query<
-            { value: string },
-            []
-          >("SELECT value FROM app_settings WHERE key='material_tracking'")
+          .query<{ value: string }, []>(
+            "SELECT value FROM app_settings WHERE key='material_tracking'",
+          )
           .get()?.value === "true";
       const costReporting =
         db
-          .query<
-            { value: string },
-            []
-          >("SELECT value FROM app_settings WHERE key='cost_reporting'")
+          .query<{ value: string }, []>(
+            "SELECT value FROM app_settings WHERE key='cost_reporting'",
+          )
           .get()?.value === "true";
       const piece = db
         .query<
@@ -176,10 +171,9 @@ export function production(db: Database) {
           409,
         );
       const active = db
-        .query<
-          { id: number; piece_id: number },
-          []
-        >("SELECT id,piece_id FROM print_jobs WHERE status='running'")
+        .query<{ id: number; piece_id: number }, []>(
+          "SELECT id,piece_id FROM print_jobs WHERE status='running'",
+        )
         .get();
       let next: ItemStatus;
       if (action === "start") {
@@ -193,10 +187,9 @@ export function production(db: Database) {
         const stock =
           materialTracking && piece.filament_id
             ? db
-                .query<
-                  { remaining_grams: number },
-                  [number]
-                >("SELECT remaining_grams FROM filaments WHERE id=?")
+                .query<{ remaining_grams: number }, [number]>(
+                  "SELECT remaining_grams FROM filaments WHERE id=?",
+                )
                 .get(piece.filament_id)
             : null;
         if (stock && stock.remaining_grams < piece.grams_per_piece)
@@ -232,10 +225,9 @@ export function production(db: Database) {
         const stock =
           materialTracking && piece.filament_id
             ? db
-                .query<
-                  { remaining_grams: number },
-                  [number]
-                >("SELECT remaining_grams FROM filaments WHERE id=?")
+                .query<{ remaining_grams: number }, [number]>(
+                  "SELECT remaining_grams FROM filaments WHERE id=?",
+                )
                 .get(piece.filament_id)
             : null;
         const used =
