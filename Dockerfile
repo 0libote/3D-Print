@@ -18,5 +18,6 @@ RUN mkdir -p /app/data && chown bun:bun /app/data
 USER bun
 EXPOSE 3000
 VOLUME ["/app/data"]
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD bun -e 'fetch("http://localhost:"+(process.env.PORT||3000)+"/healthz").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))'
-CMD ["bun", "run", "server/index.ts"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=30s CMD bun -e 'fetch("http://localhost:"+(process.env.PORT||3000)+"/healthz").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))'
+STOPSIGNAL SIGTERM
+CMD ["bun", "server/index.ts"]

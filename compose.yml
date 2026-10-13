@@ -8,5 +8,23 @@ services:
     volumes:
       - printroom_data:/app/data
     restart: unless-stopped
+    # The image already defines a HEALTHCHECK (30s interval, 5s timeout,
+    # 3 retries, 30s start period). Uncomment to override it here:
+    # healthcheck:
+    #   test: ["CMD", "bun", "-e", 'fetch("http://localhost:3000/healthz").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))']
+    #   interval: 30s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 30s
+    # Example resource caps:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.0"
+    #       memory: 512M
+    # Backup example (stop the app first so database and uploads stay aligned):
+    # docker compose down
+    # docker compose run --rm -v ./backups:/backups printroom bun scripts/maintenance.ts backup /backups/printroom-2026-10-13
+    # docker compose up -d
 volumes:
   printroom_data:

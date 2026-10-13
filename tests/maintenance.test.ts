@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -79,3 +87,72 @@ test("backup/restore includes committed WAL data, uploads, push keys and owner r
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("cleanup-uploads dry-run only lists while --apply removes unreferenced old images", async () => {
+  const root = mkdtempSync(join(tmpdir(), "printroom-cleanup-")),
+    data = join(root, "data"),
+    uploads = join(data, "uploads");
+  mkdirSync(uploads, { recursive: true });
+  const referenced = "a".repeat(32) + ".png",
+    orphan = "b".repeat(32) + ".jpg",
+    recent = "c".repeat(32) + ".webp";
+  const seed = new Database(join(data, "printroom.sqlite"));
+  seed.exec(
+    "CREATE TABLE products(image_url TEXT); CREATE TABLE filaments(image_url TEXT);",
+  );
+  seed.query("INSERT INTO products VALUES(?)").run("/uploads/" + referenced);
+  seed.close();
+  const old = new Date(Date.now() - 25 * 3600 * 1000);
+  for (const [name, mtime] of [
+    [referenced, old],
+    [orphan, old],
+    [recent, new Date()],
+    ["photo.png", old],
+  ] as const) {
+    writeFileSync(join(uploads, name), "bytes");
+    utimesSync(join(uploads, name), mtime, mtime);
+  }
+  const run = async (extra: string[]) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "run",
+        resolve("scripts/maintenance.ts"),
+        "cleanup-uploads",
+        ...extra,
+      ],
+      {
+        env: { ...process.env, DATA_DIR: data },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const status = await child.exited;
+    const output =
+      (await new Response(child.stdout).text()) +
+      (await new Response(child.stderr).text());
+    if (status) throw new Error(output);
+    return output;
+  };
+  try {
+    const dry = await run([]);
+    expect(dry).toContain("Would remove " + orphan);
+    expect(dry).not.toContain(referenced);
+    expect(dry).not.toContain(recent);
+    expect(dry).toContain("1 unreferenced images");
+    expect(existsSync(join(uploads, orphan))).toBe(true);
+    const applied = await run(["--apply"]);
+    expect(applied).toContain("Remove " + orphan);
+    expect(existsSync(join(uploads, orphan))).toBe(false);
+    expect(existsSync(join(uploads, referenced))).toBe(true);
+    expect(existsSync(join(uploads, recent))).toBe(true);
+    expect(existsSync(join(uploads, "photo.png"))).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// TODO: extract the pure deadline kind/detail computation out of
+// checkDeadlineReminders (server/index.ts) into shared/ so it can be unit
+// tested here without a database. Kept skipped until that extraction lands.
+test.skip("dueReminders pure helper", () => {});
