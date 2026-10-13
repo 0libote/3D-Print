@@ -31,8 +31,8 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import "./workspace.css";
-import "./mobile.css";
 import "./production.css";
+import "./mobile.css";
 import {
   queueEntries,
   type User,
@@ -453,7 +453,7 @@ function App() {
             </span>
           </div>
           <div className="workspace-label">WORKSPACE</div>
-          <nav>
+          <nav aria-label="Workspace">
             {tabs.map((tab) => (
               <button
                 type="button"

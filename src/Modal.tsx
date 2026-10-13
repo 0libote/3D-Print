@@ -17,6 +17,15 @@ export function Modal({
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const dialog = ref.current!;
+    const scrollY = window.scrollY;
+    const bodyStyle = {
+      position: document.body.style.position,
+      top: document.body.style.top,
+      width: document.body.style.width,
+    };
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = "100%";
     const main = document.querySelector("main"),
       sidebar = document.querySelector(".sidebar");
     if (main instanceof HTMLElement) main.inert = true;
@@ -64,7 +73,9 @@ export function Modal({
       document.removeEventListener("keydown", handler);
       if (main instanceof HTMLElement) main.inert = false;
       if (sidebar instanceof HTMLElement) sidebar.inert = false;
-      previous?.focus();
+      Object.assign(document.body.style, bodyStyle);
+      window.scrollTo(0, scrollY);
+      previous?.focus({ preventScroll: true });
     };
   }, []);
   return (

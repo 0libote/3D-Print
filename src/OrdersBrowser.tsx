@@ -152,7 +152,7 @@ export function OrdersBrowser({
           {error}
         </p>
       )}
-      <section className="panel table-panel">
+      <section className="panel table-panel orders-list">
         <div className="table-wrap">
           <table>
             <thead>
@@ -168,7 +168,7 @@ export function OrdersBrowser({
             <tbody>
               {result?.orders.map((order) => (
                 <tr key={order.id}>
-                  <td>
+                  <td data-label="Order">
                     <button
                       className="text-button"
                       onClick={() => onOpen(order.id)}
@@ -176,12 +176,14 @@ export function OrdersBrowser({
                       #{String(order.id).padStart(4, "0")}
                     </button>
                   </td>
-                  <td>
+                  <td data-label="Customer">
                     <strong>{order.customer}</strong>
                   </td>
-                  <td>{order.items.reduce((sum, i) => sum + i.quantity, 0)}</td>
-                  <td>{order.ship_by || "No deadline"}</td>
-                  <td>
+                  <td data-label="Pieces">
+                    {order.items.reduce((sum, i) => sum + i.quantity, 0)}
+                  </td>
+                  <td data-label="Ship by">{order.ship_by || "No deadline"}</td>
+                  <td data-label="Status">
                     {order.archived
                       ? "Archived"
                       : order.status === "new"
@@ -189,7 +191,7 @@ export function OrdersBrowser({
                         : order.status}
                   </td>
                   {showMoney && (
-                    <td>
+                    <td data-label="Total">
                       {new Intl.NumberFormat("en-GB", {
                         style: "currency",
                         currency: order.currency,

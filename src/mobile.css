@@ -98,10 +98,9 @@
   font-size: 14px;
 }
 
-/* Keep touch interaction app-like and prevent iOS from zooming on gestures or
-   when small form controls receive focus. */
+/* Avoid double-tap delays while keeping pinch zoom available. */
 html {
-  touch-action: pan-x pan-y;
+  touch-action: manipulation;
 }
 @media (max-width: 800px) {
   input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not(
@@ -179,7 +178,7 @@ html {
     grid-column: auto;
   }
 }
-@media (max-width: 520px) {
+@media (max-width: 780px) {
   .app {
     display: block;
   }
@@ -222,7 +221,9 @@ html {
     line-height: 1.1;
     white-space: nowrap;
   }
-  .sidebar .nav[data-page="team"] {
+  .sidebar .nav[data-page="team"],
+  .sidebar .nav[data-page="products"],
+  .sidebar .nav[data-page="jobs"] {
     display: none;
   }
   .sidebar .nav svg {
@@ -244,25 +245,32 @@ html {
     padding: 22px 16px calc(110px + env(safe-area-inset-bottom));
   }
   .topbar {
-    height: 58px;
-    padding: 0 16px;
+    height: calc(58px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) max(16px, env(safe-area-inset-right)) 0
+      max(16px, env(safe-area-inset-left));
   }
   .top-avatar {
     display: none;
   }
   .page-heading {
     gap: 12px;
+    flex-wrap: wrap;
   }
   .page-heading h1 {
     font-size: 29px;
   }
   .page-heading > button {
     flex: none;
+    width: auto;
+    min-height: 44px;
+    font-size: 14px !important;
+    padding: 0 14px !important;
   }
   .settings-card {
     padding: 20px;
   }
   .filter-tabs {
+    max-width: 100%;
     overflow-x: auto;
     flex-wrap: nowrap;
     padding-bottom: 5px;
@@ -309,5 +317,88 @@ html {
     overflow: auto;
     border-radius: 18px 18px 0 0;
     padding: 22px 18px calc(24px + env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 780px) {
+  .orders-list table,
+  .orders-list tbody {
+    display: block;
+    white-space: normal;
+  }
+  .orders-list thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .orders-list tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .orders-list td {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+  .orders-list td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .orders-list td:first-child .text-button {
+    font-size: 15px;
+  }
+  .workspace-content {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+  }
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .icon-button,
+  .theme-toggle,
+  .stock-actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .progress-button,
+  .outline-button,
+  .text-button,
+  .danger-text {
+    min-height: 44px;
+  }
+  .panel-head,
+  .detail-heading-actions {
+    flex-wrap: wrap;
+  }
+  .piece-row,
+  .piece-copy,
+  .job-history article > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .queue-printer label {
+    flex-wrap: wrap;
+  }
+  .team-actions {
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
+  .material-plan {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .update-notice {
+    bottom: calc(85px + env(safe-area-inset-bottom));
   }
 }
