@@ -105,10 +105,9 @@ if (command === "backup") {
     );
   const db = database();
   const user = db
-    .query<
-      { id: number },
-      [string]
-    >("SELECT id FROM users WHERE username=? COLLATE NOCASE AND is_admin=1")
+    .query<{ id: number }, [string]>(
+      "SELECT id FROM users WHERE username=? COLLATE NOCASE AND is_admin=1",
+    )
     .get(argument);
   if (!user) throw new Error("Owner account not found");
   const hashed = "v2$" + (await Bun.password.hash("printroom-v2:" + password));
