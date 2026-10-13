@@ -218,6 +218,9 @@ function App() {
   const [page, setPage] = useState<Page>("overview");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selectedOrder, setSelectedOrder] = useState<number | null>(null);
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [page, selectedOrder]);
   const [showArchivedCatalogue, setShowArchivedCatalogue] = useState(false);
   const [catalogueSearch, setCatalogueSearch] = useState("");
   const [queueFilter, setQueueFilter] = useState<"all" | "queued" | "printing">(

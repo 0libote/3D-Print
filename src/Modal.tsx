@@ -17,6 +17,16 @@ export function Modal({
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const dialog = ref.current!;
+    const viewport = window.visualViewport;
+    const overlay = dialog.parentElement!;
+    const fitViewport = () => {
+      overlay.style.height = `${viewport?.height ?? window.innerHeight}px`;
+      overlay.style.top = `${viewport?.offsetTop ?? 0}px`;
+    };
+    fitViewport();
+    viewport?.addEventListener("resize", fitViewport);
+    viewport?.addEventListener("scroll", fitViewport);
+    window.addEventListener("resize", fitViewport);
     const scrollY = window.scrollY;
     const bodyStyle = {
       position: document.body.style.position,
@@ -70,6 +80,9 @@ export function Modal({
     };
     document.addEventListener("keydown", handler);
     return () => {
+      viewport?.removeEventListener("resize", fitViewport);
+      viewport?.removeEventListener("scroll", fitViewport);
+      window.removeEventListener("resize", fitViewport);
       document.removeEventListener("keydown", handler);
       if (main instanceof HTMLElement) main.inert = false;
       if (sidebar instanceof HTMLElement) sidebar.inert = false;
