@@ -296,9 +296,15 @@ export function production(db: Database) {
       return runTransition();
     } catch (error) {
       if (error instanceof RequestError) throw error;
+      // Only the single-active-print guards (one_active_piece,
+      // one_running_job) may surface here as UNIQUE violations on the
+      // status columns. Any other constraint failure is unexpected and
+      // must not be misreported as an active print.
       if (
         error instanceof Error &&
-        /SQLITE_CONSTRAINT|UNIQUE constraint failed/i.test(error.message)
+        /UNIQUE constraint failed:\s*(order_pieces|print_jobs)\.status|one_active_piece|one_running_job/i.test(
+          error.message,
+        )
       )
         throw new RequestError(
           "A piece is already printing. Finish or stop it first",

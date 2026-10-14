@@ -1615,11 +1615,22 @@ async function handleRequest(
       writableOrder(orderId);
       db.transaction(() => {
         const updated = run(
-          "UPDATE orders SET is_draft=0,version=version+1,confirmed_at=CURRENT_TIMESTAMP,status='new',updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_draft=1",
+          "UPDATE orders SET is_draft=0,version=version+1,confirmed_at=CURRENT_TIMESTAMP,status='new',updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_draft=1 AND cancelled=0 AND archived=0",
           orderId,
         );
-        if (!updated.changes)
+        if (!updated.changes) {
+          const current = one(
+            "SELECT is_draft,cancelled,archived FROM orders WHERE id=?",
+            orderId,
+          );
+          if (!current) throw new RequestError("Order not found", 404);
+          if (current.cancelled || current.archived)
+            throw new RequestError(
+              "Restore this order before editing its items",
+              409,
+            );
           throw new RequestError("This order is already confirmed", 409);
+        }
         for (const item of all(
           "SELECT * FROM order_items WHERE order_id=?",
           orderId,
@@ -1662,7 +1673,18 @@ async function handleRequest(
           "order_deleted",
           `Deleted draft #${orderId}.`,
         );
-        run("DELETE FROM orders WHERE id=?", orderId);
+        const deleted = run(
+          "DELETE FROM orders WHERE id=? AND is_draft=1",
+          orderId,
+        );
+        if (!deleted.changes) {
+          if (!one("SELECT id FROM orders WHERE id=?", orderId))
+            throw new RequestError("Order not found", 404);
+          throw new RequestError(
+            "Cancel or archive confirmed orders to preserve history",
+            409,
+          );
+        }
       })();
       return json({ ok: true });
     }
