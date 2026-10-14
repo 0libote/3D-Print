@@ -124,7 +124,7 @@ export function production(db: Database) {
     notes: string,
     actualGrams?: number,
   ) {
-    return db.transaction(() => {
+    const runTransition = db.transaction(() => {
       const materialTracking =
         db
           .query<{ value: string }, []>(
@@ -240,9 +240,16 @@ export function production(db: Database) {
             409,
           );
         if (stock && used > 0) {
-          db.query(
-            "UPDATE filaments SET remaining_grams=remaining_grams-?,version=version+1 WHERE id=?",
-          ).run(used, piece.filament_id);
+          const decremented = db
+            .query(
+              "UPDATE filaments SET remaining_grams=remaining_grams-?,version=version+1 WHERE id=? AND remaining_grams>=?",
+            )
+            .run(used, piece.filament_id, used);
+          if (!decremented.changes)
+            throw new RequestError(
+              "Not enough recorded filament. Correct the remaining grams first",
+              409,
+            );
           db.query(
             "INSERT INTO stock_movements(filament_id,actor_id,grams_delta,detail) VALUES(?,?,?,?)",
           ).run(
@@ -284,7 +291,21 @@ export function production(db: Database) {
       ).run(next, pieceId);
       sync(piece.item_id);
       return { ...piece, status: next };
-    })();
+    });
+    try {
+      return runTransition();
+    } catch (error) {
+      if (error instanceof RequestError) throw error;
+      if (
+        error instanceof Error &&
+        /SQLITE_CONSTRAINT|UNIQUE constraint failed/i.test(error.message)
+      )
+        throw new RequestError(
+          "A piece is already printing. Finish or stop it first",
+          409,
+        );
+      throw error;
+    }
   }
   return { pieces, sync, reconcile, transition };
 }
