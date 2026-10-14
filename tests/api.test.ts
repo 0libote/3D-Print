@@ -587,6 +587,18 @@ test("double confirmation is rejected", async () => {
   expect((await request(`/orders/${id}/confirm`, "POST", {})).status).toBe(409);
 });
 
+test("concurrent confirmations confirm only once", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Race confirm" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  const responses = await Promise.all([
+    request(`/orders/${id}/confirm`, "POST", {}),
+    request(`/orders/${id}/confirm`, "POST", {}),
+  ]);
+  expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+  const order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(order.status).toBe("new");
+});
+
 test("cancelled orders reject edits", async () => {
   const { id } = await api("/orders", "POST", { customer: "Cancel guard" });
   await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
