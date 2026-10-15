@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import type { Order } from "../shared/models";
 import { exportOrders } from "./Studio";
 
@@ -42,7 +42,10 @@ export function OrdersBrowser({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
 
+  const [exportProgress, setExportProgress] = useState<number | null>(null);
+  const generation = useRef(0);
   useEffect(() => {
+    ++generation.current;
     let cancelled = false;
     setBusy(true);
     setError("");
@@ -64,7 +67,8 @@ export function OrdersBrowser({
     };
   }, [filter, query, revision]);
   async function more() {
-    if (!result?.next) return;
+    if (busy || !result?.next) return;
+    const current = generation.current;
     setBusy(true);
     try {
       const next: Result = await api("/orders", "GET", undefined, {
@@ -72,21 +76,26 @@ export function OrdersBrowser({
         q: query,
         before: result.next,
       });
-      setResult({ ...next, orders: [...result.orders, ...next.orders] });
+      if (current === generation.current)
+        setResult({ ...next, orders: [...result.orders, ...next.orders] });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Load failed");
+      if (current === generation.current)
+        setError(e instanceof Error ? e.message : "Load failed");
     } finally {
-      setBusy(false);
+      if (current === generation.current) setBusy(false);
     }
   }
   async function exportAll() {
-    setBusy(true);
+    if (exportProgress !== null) return;
+    setExportProgress(0);
+    setError("");
     try {
       let next: Result = await api("/orders", "GET", undefined, {
         filter,
         q: query,
       });
       const orders = [...next.orders];
+      setExportProgress(orders.length);
       while (next.next) {
         next = await api("/orders", "GET", undefined, {
           filter,
@@ -94,12 +103,13 @@ export function OrdersBrowser({
           before: next.next,
         });
         orders.push(...next.orders);
+        setExportProgress(orders.length);
       }
       exportOrders(orders);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Export failed");
     } finally {
-      setBusy(false);
+      setExportProgress(null);
     }
   }
   return (
@@ -142,12 +152,17 @@ export function OrdersBrowser({
         {result?.total ?? 0} matching orders{" "}
         <button
           className="text-button"
-          disabled={busy}
+          disabled={exportProgress !== null}
           onClick={() => void exportAll()}
         >
-          Export CSV
+          {exportProgress !== null
+            ? `Exporting… ${exportProgress} orders loaded`
+            : "Export CSV"}
         </button>
       </p>
+      {exportProgress !== null && (
+        <p role="status">Preparing CSV: {exportProgress} orders loaded…</p>
+      )}
       {error && (
         <p role="alert" className="error">
           {error}
@@ -209,7 +224,7 @@ export function OrdersBrowser({
             </tbody>
           </table>
         </div>
-        {!busy && !result?.orders.length && (
+        {!busy && !error && !result?.orders.length && (
           <p className="queue-empty">No matching orders.</p>
         )}
         {busy && (
