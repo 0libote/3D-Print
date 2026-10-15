@@ -68,30 +68,35 @@ export function PieceQueue({
   return (
     <div className="piece-queue">
       {decision}
-      {mode === "print" && features.production_tools && (
-        <div className="queue-printer">
+      {mode === "print" && (
+        <div
+          className={`queue-printer${activePieceId ? " is-busy" : " is-free"}`}
+          role="status"
+        >
           <label>
-            Printer{" "}
-            <input
-              aria-label="Printer name"
-              value={printer}
-              maxLength={100}
-              onChange={(e) => {
-                setPrinter(e.target.value);
-                if (/^[\p{L}\p{N} ._()-]{0,100}$/u.test(e.target.value)) {
-                  try {
-                    localStorage.setItem("printroom-printer", e.target.value);
-                  } catch {
-                    // Printer selection still works when storage is unavailable.
+            {features.production_tools ? "Printer" : "Status"}{" "}
+            {features.production_tools && (
+              <input
+                aria-label="Printer name"
+                value={printer}
+                maxLength={100}
+                onChange={(e) => {
+                  setPrinter(e.target.value);
+                  if (/^[\p{L}\p{N} ._()-]{0,100}$/u.test(e.target.value)) {
+                    try {
+                      localStorage.setItem("printroom-printer", e.target.value);
+                    } catch {
+                      // Printer selection still works when storage is unavailable.
+                    }
                   }
-                }
-              }}
-            />
+                }}
+              />
+            )}
           </label>
           <span>
             {activePieceId
-              ? "One piece is printing. Finish or stop it before starting another."
-              : "Printer available · one piece at a time"}
+              ? "● Printing now — finish or stop it before starting another."
+              : "○ Printer idle — pick the next queued piece to start."}
           </span>
         </div>
       )}
@@ -102,10 +107,12 @@ export function PieceQueue({
           const { order, item, piece } = entry;
           const rowPending = busy || !!pending[`order:${order.id}`];
           const active = piece.status === "printing";
+          const blockedByOther = !!activePieceId && !active;
           return (
             <div
               className={`piece-row${active ? " active-piece" : ""}`}
               key={piece.id}
+              aria-current={active ? "true" : undefined}
             >
               <span
                 role="img"
@@ -152,10 +159,12 @@ export function PieceQueue({
               </button>
               <div className="piece-actions">
                 <span
-                  className={`status status-${active ? "printing" : piece.status === "queued" ? "new" : piece.status}`}
+                  className={`status status-${active ? "printing" : piece.status === "queued" ? "new" : piece.status}${active ? " is-active" : ""}`}
+                  aria-live={active ? "polite" : undefined}
                 >
+                  <i aria-hidden="true" />
                   {active
-                    ? "Printing now"
+                    ? "● Now printing"
                     : piece.status === "queued"
                       ? "Queued"
                       : "Ready to ship"}
@@ -170,9 +179,15 @@ export function PieceQueue({
                       !!activePieceId ||
                       rowPending
                     }
+                    title={
+                      activePieceId
+                        ? "Finish or stop the current print first"
+                        : "Start this piece on the printer"
+                    }
                     onClick={() => onAction(entry, "start", printer)}
                   >
-                    <Printer aria-hidden="true" size={14} /> Start print
+                    <Printer aria-hidden="true" size={14} />{" "}
+                    {blockedByOther ? "Waiting — printer busy" : "Start print"}
                   </button>
                 )}
                 {active && (

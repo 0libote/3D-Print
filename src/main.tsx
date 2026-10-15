@@ -35,6 +35,8 @@ import "./production.css";
 import "./mobile.css";
 import {
   queueEntries,
+  countPieces,
+  activePieceEntry,
   type User,
   type Filament,
   type Product,
@@ -127,15 +129,15 @@ type Dialog =
 const statusNames: Record<Status, string> = {
   draft: "Draft",
   new: "Queued",
-  printing: "Printing",
-  printed: "Printed",
+  printing: "In progress",
+  printed: "Ready to ship",
   shipped: "Shipped",
   cancelled: "Cancelled",
 };
 const itemStageNames: Record<ItemStage, string> = {
   queued: "Queued",
-  printing: "Printing",
-  printed: "Printed",
+  printing: "Now printing",
+  printed: "Ready to ship",
   shipped: "Shipped",
 };
 const money = (n: number, currency: string) =>
@@ -582,9 +584,17 @@ function App() {
     (entry) =>
       entry.piece.status === "queued" || entry.piece.status === "printing",
   );
+  const queuedOnly = allPrints.filter(
+    (entry) => entry.piece.status === "queued",
+  );
   const ready = allPrints.filter((entry) => entry.piece.status === "printed");
-  const activePieceId = queue.find((entry) => entry.piece.status === "printing")
-    ?.piece.id;
+  const activeEntry = activePieceEntry(data.orders);
+  const activePieceId = activeEntry?.piece.id;
+  const activeOrderIds = new Set(
+    allPrints
+      .filter((entry) => entry.piece.status === "printing")
+      .map((entry) => entry.order.id),
+  );
   const pieceAction = (
     entry: PieceEntry,
     step: PieceAction,
@@ -612,6 +622,7 @@ function App() {
     label: string;
     icon: React.ReactNode;
     count?: number;
+    alert?: boolean;
   }[] = [
     {
       id: "overview",
@@ -620,9 +631,10 @@ function App() {
     },
     {
       id: "queue",
-      label: "Queue",
+      label: activeEntry ? "Printing now" : "Queue",
       icon: <ListTodo aria-hidden="true" size={20} />,
       count: queue.length,
+      alert: !!activeEntry,
     },
     {
       id: "orders",
@@ -705,6 +717,13 @@ function App() {
               >
                 {tab.icon}
                 <span>{tab.label}</span>
+                {tab.id === "queue" && tab.alert && (
+                  <i
+                    className="nav-printing-dot"
+                    aria-label="A print is running"
+                    title="A print is running"
+                  />
+                )}
                 {!!tab.count && <b>{tab.count}</b>}
               </button>
             ))}
@@ -779,16 +798,32 @@ function App() {
                 </div>
                 <div className="stat-grid">
                   <Stat
+                    label={activeEntry ? "Now printing" : "Printer"}
+                    value={activeEntry ? 1 : 0}
+                    sub={
+                      activeEntry
+                        ? `${activeEntry.item.product_name} · order #${String(activeEntry.order.id).padStart(4, "0")}`
+                        : "Idle · ready to start"
+                    }
+                    alert={!!activeEntry}
+                  />
+                  <Stat
+                    label="Queued pieces"
+                    value={queuedOnly.length}
+                    sub="Waiting to start"
+                  />
+                  <Stat
+                    label="Ready to ship"
+                    value={ready.length}
+                    sub="Printed · not yet shipped"
+                  />
+                  <Stat
                     label="Draft orders"
                     value={data.orders.filter((o) => o.is_draft).length}
-                  />
-                  <Stat label="Pieces to print" value={queue.length} />
-                  <Stat label="Pieces to ship" value={ready.length} />
-                  <Stat
-                    label="Shipped orders"
-                    value={data.totals?.shipped_orders || 0}
+                    sub="Not yet in the queue"
                   />
                 </div>
+                <NowPrintingBanner entry={activeEntry} onOpen={openOrder} />
                 {data.settings.material_tracking && (
                   <StudioOverview
                     orders={data.orders}
@@ -851,12 +886,22 @@ function App() {
                             {order.customer}
                           </strong>
                           <small>
-                            {order.items.length}{" "}
-                            {order.items.length === 1 ? "item" : "items"} ·{" "}
-                            {date(order.created_at)}
+                            {(() => {
+                              const counts = countPieces(order);
+                              if (order.is_draft)
+                                return `${order.items.length} ${order.items.length === 1 ? "item" : "items"} · draft · not in queue`;
+                              if (!counts.total)
+                                return `No pieces · ${date(order.created_at)}`;
+                              if (activeOrderIds.has(order.id))
+                                return `${counts.queued} queued · 1 now printing · ${counts.printed} ready · ${counts.shipped} shipped`;
+                              return `${counts.queued + counts.printing} to print · ${counts.printed} ready · ${counts.shipped} shipped`;
+                            })()}
                           </small>
                         </span>
-                        <StatusBadge status={order.status} />
+                        <OrderStatusBadge
+                          order={order}
+                          isActive={activeOrderIds.has(order.id)}
+                        />
                       </button>
                     ))}
                     {!data.orders.length && (
@@ -876,11 +921,14 @@ function App() {
                 <div className="page-heading">
                   <div>
                     <span className="eyebrow">FULFILLMENT BOARD</span>
-                    <h1>Print queue</h1>
+                    <h1>{activeEntry ? "Now printing" : "Print queue"}</h1>
                     <p>
-                      {queue.length} {queue.length === 1 ? "piece" : "pieces"}{" "}
-                      waiting or printing. The nearest ship-by dates appear
-                      first.
+                      {activeEntry
+                        ? `${activeEntry.item.product_name} · order #${String(activeEntry.order.id).padStart(4, "0")} is on the printer. ${queuedOnly.length} queued behind it · ${ready.length} ready to ship.`
+                        : queuedOnly.length
+                          ? `${queuedOnly.length} ${queuedOnly.length === 1 ? "piece" : "pieces"} queued · printer idle · ${ready.length} ready to ship.`
+                          : `Printer idle · ${ready.length} ${ready.length === 1 ? "piece" : "pieces"} ready to ship.`}{" "}
+                      Nearest ship-by dates first.
                     </p>
                   </div>
                   <Button
@@ -890,7 +938,12 @@ function App() {
                     onClick={() => setDialog({ type: "order" })}
                   />
                 </div>
-                <div className="filter-tabs">
+                <NowPrintingBanner entry={activeEntry} onOpen={openOrder} />
+                <div
+                  className="filter-tabs"
+                  role="group"
+                  aria-label="Filter active prints"
+                >
                   {(["all", "queued", "printing"] as const).map((stage) => (
                     <button
                       type="button"
@@ -899,7 +952,11 @@ function App() {
                       className={queueFilter === stage ? "selected" : ""}
                       onClick={() => setQueueFilter(stage)}
                     >
-                      {stage === "all" ? "All active" : itemStageNames[stage]}
+                      {stage === "all"
+                        ? "All to print"
+                        : stage === "printing"
+                          ? "Now printing"
+                          : itemStageNames[stage]}
                       <span>
                         {stage === "all"
                           ? queue.length
@@ -958,6 +1015,7 @@ function App() {
                   currency={chosen.currency}
                   busy={!!pending[`order:${chosen.id}`]}
                   pending={pending}
+                  isActive={activeOrderIds.has(chosen.id)}
                   onBack={() => setSelectedOrder(null)}
                   onEdit={() => setDialog({ type: "order", value: chosen })}
                   onAddItem={() => setDialog({ type: "item", order: chosen })}
@@ -1680,6 +1738,7 @@ function OrderDetail({
   onOrderWork,
   onDeleteItem,
   onDelete,
+  isActive = false,
 }: {
   order: Order;
   showMoney: boolean;
@@ -1707,8 +1766,10 @@ function OrderDetail({
   onOrderWork: (work: () => Promise<unknown>) => void;
   onDeleteItem: (itemId: number) => void;
   onDelete: () => void;
+  isActive?: boolean;
 }) {
   const features = useFeatures();
+  const counts = countPieces(order);
   const total = order.items.reduce(
     (sum, item) => sum + item.unit_price * item.quantity,
     0,
@@ -1720,6 +1781,12 @@ function OrderDetail({
   const totalQuantity = order.items.reduce(
     (sum, item) => sum + item.quantity,
     0,
+  );
+  const activeItem = order.items.find((item) =>
+    item.pieces.some((piece) => piece.id === activePieceId),
+  );
+  const activePiece = activeItem?.pieces.find(
+    (piece) => piece.id === activePieceId,
   );
   return (
     <div className="order-detail-page">
@@ -1733,12 +1800,14 @@ function OrderDetail({
           </span>
           <div className="detail-title-row">
             <h1>Order #{String(order.id).padStart(4, "0")}</h1>
-            <StatusBadge status={order.status} />
+            <OrderStatusBadge order={order} isActive={isActive} />
           </div>
           <p>
             {order.is_draft
               ? "Add prints, then confirm this draft to start fulfillment."
-              : `Confirmed ${date(order.confirmed_at || order.created_at)} · ${completed} of ${totalQuantity} pieces shipped`}
+              : isActive && activeItem && activePiece
+                ? `Now printing: ${activeItem.product_name} · piece ${activePiece.ordinal} of ${activeItem.quantity} · ${completed} of ${totalQuantity} pieces shipped`
+                : `Confirmed ${date(order.confirmed_at || order.created_at)} · ${completed} of ${totalQuantity} pieces shipped`}
           </p>
           <div className="detail-deadline">
             <Deadline order={order} />
@@ -1803,7 +1872,19 @@ function OrderDetail({
           {!order.is_draft && !order.cancelled && !order.archived && (
             <section className="panel">
               <div className="panel-head">
-                <h2>Individual pieces</h2>
+                <div>
+                  <h2>
+                    {isActive
+                      ? "Now printing in this order"
+                      : counts.printed
+                        ? "Pieces ready to ship"
+                        : "Individual pieces"}
+                  </h2>
+                  <p>
+                    {counts.queued} queued · {counts.printing} now printing ·{" "}
+                    {counts.printed} ready to ship · {counts.shipped} shipped
+                  </p>
+                </div>
               </div>
               <PieceQueue
                 entries={queueEntries([order]).filter(
@@ -1984,13 +2065,39 @@ function OrderDetail({
             <h2>
               {order.is_draft
                 ? "Waiting for confirmation"
-                : statusNames[order.status]}
+                : isActive
+                  ? "Now printing"
+                  : statusNames[order.status]}
             </h2>
             <p>
               {order.is_draft
                 ? "This draft does not appear in the print queue."
-                : "Each print item moves through the queue independently."}
+                : isActive
+                  ? "One piece of this order is on the printer. Other pieces wait in the queue."
+                  : order.status === "printing"
+                    ? "Work has started, but the printer is currently free."
+                    : "Each print item moves through the queue independently."}
             </p>
+            {!order.is_draft && (
+              <dl className="fulfillment-breakdown">
+                <div>
+                  <dt>Queued</dt>
+                  <dd>{counts.queued}</dd>
+                </div>
+                <div>
+                  <dt>Now printing</dt>
+                  <dd>{counts.printing}</dd>
+                </div>
+                <div>
+                  <dt>Ready to ship</dt>
+                  <dd>{counts.printed}</dd>
+                </div>
+                <div>
+                  <dt>Shipped</dt>
+                  <dd>{counts.shipped}</dd>
+                </div>
+              </dl>
+            )}
             {!order.is_draft && (
               <div className="progress-track">
                 <span
@@ -2164,19 +2271,104 @@ function Field({
     </div>
   );
 }
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({
+  label,
+  value,
+  sub,
+  alert = false,
+}: {
+  label: string;
+  value: number;
+  sub?: string;
+  alert?: boolean;
+}) {
   return (
-    <div className="stat">
+    <div className={`stat${alert ? " stat-alert" : ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+      {sub && <small>{sub}</small>}
     </div>
   );
 }
-function StatusBadge({ status }: { status: Status }) {
+function NowPrintingBanner({
+  entry,
+  onOpen,
+}: {
+  entry: PieceEntry | null | undefined;
+  onOpen: (id: number) => void;
+}) {
+  if (!entry) return null;
   return (
-    <span className={`status status-${status}`}>
-      <i aria-hidden="true" />
-      {statusNames[status]}
+    <section
+      className="panel now-printing-banner"
+      aria-live="polite"
+      data-testid="now-printing"
+    >
+      <span className="now-printing-pulse" aria-hidden="true" />
+      <div className="now-printing-copy">
+        <span className="eyebrow">Now on the printer</span>
+        <strong>
+          {entry.item.product_name} · piece {entry.piece.ordinal} of{" "}
+          {entry.item.quantity}
+        </strong>
+        <small>
+          Order #{String(entry.order.id).padStart(4, "0")} ·{" "}
+          {entry.order.customer} · {entry.item.filament_name || "No filament"}
+        </small>
+      </div>
+      <button
+        type="button"
+        className="outline-button"
+        onClick={() => onOpen(entry.order.id)}
+      >
+        Open order <ArrowRight aria-hidden="true" size={15} />
+      </button>
+    </section>
+  );
+}
+function OrderStatusBadge({
+  order,
+  isActive = false,
+}: {
+  order: Order;
+  isActive?: boolean;
+}) {
+  if (order.archived)
+    return (
+      <span className="status status-shipped">
+        <i aria-hidden="true" />
+        Archived
+      </span>
+    );
+  if (order.cancelled)
+    return (
+      <span className="status status-cancelled">
+        <i aria-hidden="true" />
+        Cancelled
+      </span>
+    );
+  if (order.is_draft)
+    return (
+      <span className="status status-draft">
+        <i aria-hidden="true" />
+        Draft
+      </span>
+    );
+  const counts = countPieces(order);
+  const detail =
+    counts.total > 0
+      ? `${counts.shipped}/${counts.total} shipped`
+      : statusNames[order.status];
+  return (
+    <span className="order-status-wrap">
+      <span
+        className={`status status-${order.status}${isActive ? " is-active" : ""}`}
+        title={isActive ? "A piece of this order is on the printer" : undefined}
+      >
+        <i aria-hidden="true" />
+        {isActive ? "Now printing" : statusNames[order.status]}
+      </span>
+      <small className="order-status-sub">{detail}</small>
     </span>
   );
 }

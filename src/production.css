@@ -255,3 +255,146 @@
   margin-bottom: 15px;
   color: var(--muted);
 }
+
+/* Printing vs queued vs ready states. "In progress" means work has started;
+   "Now printing" is reserved for the single piece on the printer. */
+.now-printing-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 22px;
+  margin-bottom: 22px;
+  border: 1px solid #e5b78e;
+  border-left: 4px solid #c87f3f;
+  background: linear-gradient(180deg, #fff8f1, var(--surface));
+}
+.now-printing-copy {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.now-printing-copy strong {
+  font-size: 16px;
+}
+.now-printing-copy small {
+  color: var(--muted);
+  font-size: 13px;
+}
+.now-printing-pulse {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  background: #c87f3f;
+  box-shadow: 0 0 0 4px #c87f3f26;
+  animation: now-printing-pulse 1.6s ease-in-out infinite;
+}
+@keyframes now-printing-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.75);
+    opacity: 0.65;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .now-printing-pulse,
+  .status.is-active i {
+    animation: none;
+  }
+}
+html[data-theme="dark"] .now-printing-banner {
+  background: linear-gradient(180deg, #3a2d22, var(--surface));
+  border-color: #7a5a3c;
+}
+.stat-alert {
+  border-color: #e5b78e;
+  box-shadow: inset 0 0 0 1px #e5b78e55;
+}
+.stat small {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-printing-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: #c87f3f;
+  box-shadow: 0 0 0 3px #c87f3f2e;
+  margin-left: -6px;
+}
+.status.is-active {
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.status.is-active i {
+  animation: now-printing-pulse 1.6s ease-in-out infinite;
+}
+.order-status-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.order-status-sub {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.recent-list .order-status-wrap {
+  flex: none;
+}
+.fulfillment-breakdown {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 0;
+}
+.fulfillment-breakdown > div {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 6px;
+  text-align: center;
+}
+.fulfillment-breakdown dt {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fulfillment-breakdown dd {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+.queue-printer.is-busy {
+  border-bottom-color: #e5b78e;
+  color: var(--text);
+  font-weight: 700;
+}
+.queue-printer.is-free {
+  color: var(--muted);
+}
+.active-piece {
+  border-left-width: 4px;
+  box-shadow: inset 0 0 0 1px #c8956655;
+}
+@media (max-width: 700px) {
+  .now-printing-banner {
+    flex-wrap: wrap;
+  }
+  .fulfillment-breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

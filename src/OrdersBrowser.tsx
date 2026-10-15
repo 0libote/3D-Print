@@ -1,6 +1,16 @@
 import { useEffect, useState, useRef } from "react";
 import type { Order } from "../shared/models";
+import { countPieces } from "../shared/models";
 import { exportOrders } from "./Studio";
+
+const statusLabels: Record<string, string> = {
+  draft: "Draft",
+  new: "Queued",
+  printing: "In progress",
+  printed: "Ready to ship",
+  shipped: "Shipped",
+  cancelled: "Cancelled",
+};
 
 const labels = {
   all: "All orders",
@@ -200,11 +210,58 @@ export function OrdersBrowser({
                   </td>
                   <td data-label="Ship by">{order.ship_by || "No deadline"}</td>
                   <td data-label="Status">
-                    {order.archived
-                      ? "Archived"
-                      : order.status === "new"
-                        ? "Queued"
-                        : order.status}
+                    {(() => {
+                      const counts = countPieces(order);
+                      const hasActive = order.items.some((item) =>
+                        item.pieces.some(
+                          (piece) => piece.status === "printing",
+                        ),
+                      );
+                      const label = order.archived
+                        ? "Archived"
+                        : order.cancelled
+                          ? "Cancelled"
+                          : order.is_draft
+                            ? "Draft"
+                            : hasActive
+                              ? "Now printing"
+                              : (statusLabels[order.status] ?? order.status);
+                      const tone = order.archived
+                        ? "shipped"
+                        : order.cancelled
+                          ? "cancelled"
+                          : order.is_draft
+                            ? "draft"
+                            : hasActive
+                              ? "printing"
+                              : order.status;
+                      return (
+                        <span className="order-status-wrap">
+                          <span
+                            className={`status status-${tone}${hasActive ? " is-active" : ""}`}
+                          >
+                            <i aria-hidden="true" />
+                            {label}
+                          </span>
+                          {!order.is_draft &&
+                            !order.cancelled &&
+                            !order.archived &&
+                            counts.total > 0 && (
+                              <small className="order-status-sub">
+                                {counts.shipped}/{counts.total} shipped
+                                {counts.printed
+                                  ? ` · ${counts.printed} ready`
+                                  : ""}
+                                {hasActive
+                                  ? ""
+                                  : counts.queued
+                                    ? ` · ${counts.queued} queued`
+                                    : ""}
+                              </small>
+                            )}
+                        </span>
+                      );
+                    })()}
                   </td>
                   {showMoney && (
                     <td data-label="Total">

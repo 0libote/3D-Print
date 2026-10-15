@@ -117,6 +117,43 @@ export type Job = {
 };
 export type PieceEntry = { order: Order; item: Item; piece: Piece };
 
+export type PieceCounts = {
+  total: number;
+  queued: number;
+  printing: number;
+  printed: number;
+  shipped: number;
+};
+
+export function countPieces(order: Order): PieceCounts {
+  const counts: PieceCounts = {
+    total: 0,
+    queued: 0,
+    printing: 0,
+    printed: 0,
+    shipped: 0,
+  };
+  for (const item of order.items) {
+    for (const piece of item.pieces) {
+      counts.total += 1;
+      counts[piece.status] += 1;
+    }
+  }
+  return counts;
+}
+
+export function activePieceEntry(orders: Order[]): PieceEntry | null {
+  for (const order of orders) {
+    if (order.is_draft || order.cancelled || order.archived) continue;
+    for (const item of order.items) {
+      for (const piece of item.pieces) {
+        if (piece.status === "printing") return { order, item, piece };
+      }
+    }
+  }
+  return null;
+}
+
 export function queueEntries(orders: Order[]): PieceEntry[] {
   return orders
     .filter((o) => !o.is_draft && !o.cancelled && !o.archived)
