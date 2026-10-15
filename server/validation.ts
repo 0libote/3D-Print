@@ -1,7 +1,8 @@
 import { RequestError } from "./production";
 
 export function positiveNumber(value: unknown, label: string, max = 1_000_000) {
-  const number = Number(value ?? 0);
+  if (value === undefined) return undefined;
+  const number = Number(value);
   if (!Number.isFinite(number) || number < 0 || number > max)
     throw new RequestError(`${label} must be between 0 and ${max}`);
   return number;
@@ -94,4 +95,17 @@ export async function imageExtension(file: File) {
   throw new RequestError(
     "The file content does not match a supported image format",
   );
+}
+
+export function imageUrl(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (text.length > 500) throw new RequestError("Image URL is too long");
+  // Uploaded images use an app-local path; external images must use HTTP(S).
+  if (/^\/uploads\/[a-zA-Z0-9._-]+$/.test(text)) return text;
+  try {
+    const url = new URL(text);
+    if (["http:", "https:"].includes(url.protocol)) return text;
+  } catch {}
+  throw new RequestError("Use an HTTP or HTTPS image URL or an uploaded image");
 }

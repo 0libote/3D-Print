@@ -9,6 +9,7 @@ import { production, RequestError } from "./production";
 import {
   validatePushSubscription,
   imageExtension,
+  imageUrl,
   positiveNumber,
   productionDetails,
 } from "./validation";
@@ -311,7 +312,11 @@ async function sendNotice(
           { TTL: 3600, urgency: "normal" },
         );
       } catch (error: any) {
-        if (error?.statusCode === 404 || error?.statusCode === 410)
+        if (
+          error instanceof SyntaxError ||
+          error?.statusCode === 404 ||
+          error?.statusCode === 410
+        )
           run(
             "DELETE FROM push_subscriptions WHERE endpoint=?",
             subscriber.endpoint,
@@ -484,12 +489,23 @@ function orderFilterQuery(filter: string, query: string) {
   const where =
     clauses[filter] +
     (query
-      ? " AND (CAST(id AS TEXT) LIKE ? OR customer LIKE ? OR id IN(SELECT order_id FROM order_items WHERE product_name LIKE ?))"
+      ? " AND (CAST(id AS TEXT) LIKE ? ESCAPE '\\' OR customer LIKE ? ESCAPE '\\' OR id IN(SELECT order_id FROM order_items WHERE product_name LIKE ? ESCAPE '\\'))"
       : "");
   return {
     where,
-    params: query ? [`%${query}%`, `%${query}%`, `%${query}%`] : [],
+    params: query ? Array(3).fill(`%${query.replace(/[\\%_]/g, "\\$&")}%`) : [],
   };
+}
+function beforeCursor(value: string | null) {
+  if (value === null) return Number.MAX_SAFE_INTEGER;
+  if (!/^\d+$/.test(value)) throw new RequestError("Invalid before cursor");
+  return id(value);
+}
+function updateVersion(sql: string, version: unknown, ...params: any[]) {
+  const result = run(sql + " AND version=?", ...params, Number(version));
+  if (!result.changes)
+    throw new RequestError("This record changed. Refresh before saving", 409);
+  return result;
 }
 function expectVersion(table: string, recordId: number, value: unknown) {
   const existing = one(`SELECT * FROM ${table} WHERE id=?`, recordId);
@@ -561,7 +577,7 @@ function checkDeadlineReminders() {
     "SELECT id,customer,ship_by FROM orders WHERE is_draft=0 AND cancelled=0 AND archived=0 AND status<>'shipped' AND ship_by<>''",
   )) {
     const days = Date.parse(order.ship_by) / 86400000 - todayDay;
-    if (days > 2) continue;
+    if (!Number.isFinite(days) || days > 2) continue;
     const overdue = days < 0;
     const kind = overdue ? "deadline_overdue" : "deadline_soon";
     const result = run(
@@ -631,11 +647,12 @@ function liveResponse(request: Request) {
     },
   });
 }
-const loginAttempts = new Map<string, { count: number; reset: number }>();
+const loginAttempts = new Map<string, number[]>();
 setInterval(() => {
   run("DELETE FROM sessions WHERE expires_at<=datetime('now')");
   for (const [key, value] of loginAttempts)
-    if (value.reset < Date.now()) loginAttempts.delete(key);
+    if (!value.some((time) => time > Date.now() - 60_000))
+      loginAttempts.delete(key);
 }, 60_000);
 async function handleRequest(
   req: Request,
@@ -729,18 +746,14 @@ async function handleRequest(
     }
     if (["/api/setup", "/api/login"].includes(path) && req.method === "POST") {
       const address = server.requestIP?.(req)?.address || "local";
-      const attempts = loginAttempts.get(address) || {
-        count: 0,
-        reset: Date.now() + 60_000,
-      };
-      if (attempts.reset < Date.now()) {
-        attempts.count = 0;
-        attempts.reset = Date.now() + 60_000;
-      }
-      attempts.count++;
+      const now = Date.now();
+      const attempts = (loginAttempts.get(address) || []).filter(
+        (time) => time > now - 60_000,
+      );
       loginAttempts.set(address, attempts);
-      if (attempts.count > 10)
+      if (attempts.length >= 10)
         return bad("Too many attempts. Try again in a minute", 429);
+      attempts.push(now);
     }
     if (path === "/api/setup" && req.method === "POST") {
       if (one("SELECT id FROM users LIMIT 1"))
@@ -768,6 +781,7 @@ async function handleRequest(
         return true;
       })();
       if (!created) return bad("Setup is already complete", 409);
+      loginAttempts.delete(server.requestIP?.(req)?.address || "local");
       return new Response(JSON.stringify({ ok: true }), {
         status: 201,
         headers: {
@@ -791,6 +805,7 @@ async function handleRequest(
         !(await verifyPassword(String(b.password ?? ""), user.password_hash))
       )
         return bad("Incorrect username or password", 401);
+      loginAttempts.delete(server.requestIP?.(req)?.address || "local");
       const token = randomHex(32);
       run(
         "INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))",
@@ -853,8 +868,7 @@ async function handleRequest(
         url.searchParams.get("filter") || "all",
         optional(url.searchParams.get("q"), 200),
       );
-      const before =
-        Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
+      const before = beforeCursor(url.searchParams.get("before"));
       const rows = orderRows(`(${where}) AND id<?`, [...params, before], 50);
       const total = one(
         `SELECT COUNT(*) AS count FROM orders WHERE ${where}`,
@@ -884,8 +898,7 @@ async function handleRequest(
       const orderId = id(history[1]);
       if (!one("SELECT id FROM orders WHERE id=?", orderId))
         return bad("Order not found", 404);
-      const before =
-        Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
+      const before = beforeCursor(url.searchParams.get("before"));
       return json(
         all(
           "SELECT * FROM activity_events WHERE order_id=? AND id<? ORDER BY id DESC LIMIT 50",
@@ -903,7 +916,7 @@ async function handleRequest(
         pieceId,
       )?.status;
       const piece = db.transaction(() => {
-        const result = workshop.transition(
+        const result = workshop.transitionInTransaction(
           pieceId,
           String(b.action),
           Number(b.version),
@@ -945,7 +958,7 @@ async function handleRequest(
       return json(
         all(
           "SELECT j.*,u.name AS operator_name,j.product_name_snapshot AS product_name,j.ordinal_snapshot AS ordinal,j.order_id_snapshot AS order_id FROM print_jobs j LEFT JOIN users u ON u.id=j.operator_id LEFT JOIN order_pieces p ON p.id=j.piece_id LEFT JOIN order_items i ON i.id=p.item_id WHERE j.id<? ORDER BY j.id DESC LIMIT 100",
-          Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER,
+          beforeCursor(url.searchParams.get("before")),
         ),
       );
     const movements = path.match(/^\/api\/filaments\/(\d+)\/movements$/);
@@ -1138,7 +1151,11 @@ async function handleRequest(
             );
             return true;
           } catch (error: any) {
-            if (error?.statusCode === 404 || error?.statusCode === 410)
+            if (
+              error instanceof SyntaxError ||
+              error?.statusCode === 404 ||
+              error?.statusCode === 410
+            )
               run(
                 "DELETE FROM push_subscriptions WHERE endpoint=?",
                 subscription.endpoint,
@@ -1165,7 +1182,7 @@ async function handleRequest(
         "Remaining grams",
         1_000_000_000,
       );
-      const cost = positiveNumber(b.cost_per_kg, "Cost per kg");
+      const cost = positiveNumber(b.cost_per_kg ?? 0, "Cost per kg");
       db.transaction(() => {
         run(
           "INSERT INTO filaments (name,brand,material,color,notes,image_url,spool_count,grams_per_spool) VALUES (?,?,?,?,?,?,?,?)",
@@ -1174,7 +1191,7 @@ async function handleRequest(
           required(b.material, "Material", 50),
           color,
           optional(b.notes),
-          optional(b.image_url, 500),
+          imageUrl(b.image_url),
           stock.count,
           stock.grams,
         );
@@ -1194,25 +1211,26 @@ async function handleRequest(
         color = String(b.color ?? "");
       if (!/^#[0-9a-fA-F]{6}$/.test(color)) return bad("Choose a valid colour");
       const stock = filamentStock(b);
-      const existing = expectVersion("filaments", id(filament[1]), b.version);
-      const remaining = positiveNumber(
-        b.remaining_grams ?? existing.remaining_grams,
-        "Remaining grams",
-        1_000_000_000,
-      );
-      const cost = positiveNumber(
-        b.cost_per_kg ?? existing.cost_per_kg,
-        "Cost per kg",
-      );
       db.transaction(() => {
-        run(
+        const existing = expectVersion("filaments", id(filament[1]), b.version);
+        const remaining = positiveNumber(
+          b.remaining_grams ?? existing.remaining_grams,
+          "Remaining grams",
+          1_000_000_000,
+        );
+        const cost = positiveNumber(
+          b.cost_per_kg ?? existing.cost_per_kg,
+          "Cost per kg",
+        );
+        updateVersion(
           "UPDATE filaments SET name=?,brand=?,material=?,color=?,notes=?,image_url=?,spool_count=?,grams_per_spool=?,version=version+1 WHERE id=?",
+          b.version,
           required(b.name, "Filament name"),
           optional(b.brand, 100),
           required(b.material, "Material", 50),
           color,
           optional(b.notes),
-          optional(b.image_url, 500),
+          imageUrl(b.image_url),
           stock.count,
           stock.grams,
           id(filament[1]),
@@ -1232,7 +1250,7 @@ async function handleRequest(
             existing.id,
             currentUser.id,
             stock.count - existing.spool_count,
-            remaining - existing.remaining_grams,
+            (remaining ?? existing.remaining_grams) - existing.remaining_grams,
             "Manual stock correction",
           );
       })();
@@ -1246,22 +1264,22 @@ async function handleRequest(
       db.transaction(() => {
         const existing = one("SELECT * FROM filaments WHERE id=?", filamentId);
         if (!existing) throw new RequestError("Filament not found", 404);
-        const count = existing.spool_count + delta,
-          grams = Math.max(
-            0,
-            existing.remaining_grams + delta * existing.grams_per_spool,
-          );
-        if (count < 0 || count > 100000 || grams < 0)
+        const adjusted = run(
+          "UPDATE filaments SET spool_count=spool_count+?,remaining_grams=MAX(0,remaining_grams+?*grams_per_spool),version=version+1 WHERE id=? AND spool_count+? BETWEEN 0 AND 100000",
+          delta,
+          delta,
+          filamentId,
+          delta,
+        );
+        if (!adjusted.changes)
           throw new RequestError(
             "Stock cannot go below zero or exceed 100,000 spools",
             409,
           );
-        run(
-          "UPDATE filaments SET spool_count=?,remaining_grams=?,version=version+1 WHERE id=?",
-          count,
-          grams,
+        const grams = one(
+          "SELECT remaining_grams FROM filaments WHERE id=?",
           filamentId,
-        );
+        )!.remaining_grams;
         run(
           "INSERT INTO stock_movements(filament_id,actor_id,spool_delta,grams_delta,detail) VALUES(?,?,?,?,?)",
           filamentId,
@@ -1291,9 +1309,7 @@ async function handleRequest(
     }
     if (path === "/api/products" && req.method === "POST") {
       const b = await body(req),
-        price = Number(b.price ?? 0);
-      if (!Number.isFinite(price) || price < 0)
-        return bad("Price must be zero or more");
+        price = positiveNumber(b.price ?? 0, "Price", 1_000_000)!;
       const ids = Array.isArray(b.filament_ids)
         ? b.filament_ids.map((value) => id(String(value)))
         : [];
@@ -1305,13 +1321,13 @@ async function handleRequest(
           "INSERT INTO products (name,description,image_url,price) VALUES (?,?,?,?)",
           required(b.name, "Product name"),
           optional(b.description),
-          optional(b.image_url, 500),
+          imageUrl(b.image_url),
           price,
         );
         run(
           "UPDATE products SET grams_per_piece=?,minutes_per_piece=?,production_url=?,revision=?,print_profile=? WHERE id=?",
-          details.grams,
-          details.minutes,
+          details.grams ?? 0,
+          details.minutes ?? 0,
           details.url,
           details.revision,
           details.profile,
@@ -1330,30 +1346,29 @@ async function handleRequest(
     const product = path.match(/^\/api\/products\/(\d+)$/);
     if (product && req.method === "PUT") {
       const b = await body(req),
-        price = Number(b.price ?? 0),
+        price = positiveNumber(b.price ?? 0, "Price", 1_000_000)!,
         productId = id(product[1]);
-      if (!Number.isFinite(price) || price < 0)
-        return bad("Price must be zero or more");
       const ids = Array.isArray(b.filament_ids)
         ? b.filament_ids.map((value) => id(String(value)))
         : [];
       if (ids.some((fid) => !one("SELECT id FROM filaments WHERE id=?", fid)))
         return bad("Filament not found", 404);
       const details = productionDetails(b);
-      expectVersion("products", productId, b.version);
       db.transaction(() => {
-        run(
+        expectVersion("products", productId, b.version);
+        updateVersion(
           "UPDATE products SET name=?,description=?,image_url=?,price=?,version=version+1 WHERE id=?",
+          b.version,
           required(b.name, "Product name"),
           optional(b.description),
-          optional(b.image_url, 500),
+          imageUrl(b.image_url),
           price,
           productId,
         );
         run(
-          "UPDATE products SET grams_per_piece=?,minutes_per_piece=?,production_url=?,revision=?,print_profile=? WHERE id=?",
-          details.grams,
-          details.minutes,
+          "UPDATE products SET grams_per_piece=COALESCE(?,grams_per_piece),minutes_per_piece=COALESCE(?,minutes_per_piece),production_url=?,revision=?,print_profile=? WHERE id=?",
+          details.grams ?? null,
+          details.minutes ?? null,
           details.url,
           details.revision,
           details.profile,
@@ -1382,15 +1397,18 @@ async function handleRequest(
       /^\/api\/(products|filaments)\/(\d+)\/restore$/,
     );
     if (restoreCatalogue && req.method === "POST") {
-      const b = await body(req),
-        table = restoreCatalogue[1],
-        recordId = id(restoreCatalogue[2]);
-      expectVersion(table, recordId, b.version);
-      run(
-        `UPDATE ${table} SET archived=0,version=version+1 WHERE id=?`,
-        recordId,
-      );
-      return json({ ok: true });
+      const b = await body(req);
+      return db.transaction(() => {
+        const table = restoreCatalogue[1],
+          recordId = id(restoreCatalogue[2]);
+        expectVersion(table, recordId, b.version);
+        updateVersion(
+          `UPDATE ${table} SET archived=0,version=version+1 WHERE id=?`,
+          b.version,
+          recordId,
+        );
+        return json({ ok: true });
+      })();
     }
     if (path === "/api/upload" && req.method === "POST") {
       const form = await req.formData(),
@@ -1449,94 +1467,105 @@ async function handleRequest(
     const order = path.match(/^\/api\/orders\/(\d+)$/);
     if (order && req.method === "PUT") {
       const b = await body(req);
-      const orderId = id(order[1]),
-        existing = one("SELECT * FROM orders WHERE id=?", orderId);
-      if (!existing) return bad("Order not found", 404);
-      writableOrder(orderId);
-      expectVersion("orders", orderId, b.version);
-      const deadline = shipBy(b.ship_by);
-      run(
-        "UPDATE orders SET customer=?,contact=?,notes=?,ship_by=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        required(b.customer, "Customer"),
-        optional(b.contact, 200),
-        optional(b.notes),
-        deadline,
-        orderId,
-      );
-      activity(
-        currentUser,
-        orderId,
-        "order_updated",
-        existing.ship_by !== deadline
-          ? `Updated order details and ship-by date to ${deadline || "none"}.`
-          : "Updated order details.",
-      );
-      setTimeout(checkDeadlineReminders, 1000);
-      return json({ ok: true });
+      return db.transaction(() => {
+        const orderId = id(order[1]),
+          existing = one("SELECT * FROM orders WHERE id=?", orderId);
+        if (!existing) return bad("Order not found", 404);
+        writableOrder(orderId);
+        expectVersion("orders", orderId, b.version);
+        const deadline = shipBy(b.ship_by);
+        updateVersion(
+          "UPDATE orders SET customer=?,contact=?,notes=?,ship_by=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          b.version,
+          required(b.customer, "Customer"),
+          optional(b.contact, 200),
+          optional(b.notes),
+          deadline,
+          orderId,
+        );
+        activity(
+          currentUser,
+          orderId,
+          "order_updated",
+          existing.ship_by !== deadline
+            ? `Updated order details and ship-by date to ${deadline || "none"}.`
+            : "Updated order details.",
+        );
+        setTimeout(checkDeadlineReminders, 1000);
+        return json({ ok: true });
+      })();
     }
     const lifecycle = path.match(/^\/api\/orders\/(\d+)\/lifecycle$/);
     if (lifecycle && req.method === "POST") {
-      const b = await body(req),
-        orderId = id(lifecycle[1]),
-        existing = expectVersion("orders", orderId, b.version);
-      if (
-        one(
-          "SELECT p.id FROM order_pieces p JOIN order_items i ON i.id=p.item_id WHERE i.order_id=? AND p.status='printing'",
-          orderId,
+      const b = await body(req);
+      return db.transaction(() => {
+        const orderId = id(lifecycle[1]),
+          existing = expectVersion("orders", orderId, b.version);
+        if (
+          one(
+            "SELECT p.id FROM order_pieces p JOIN order_items i ON i.id=p.item_id WHERE i.order_id=? AND p.status='printing'",
+            orderId,
+          )
         )
-      )
-        return bad("Stop the active print first", 409);
-      if (!["cancel", "archive", "restore"].includes(b.action))
-        return bad("Choose cancel, archive or restore");
-      if (
-        b.action === "archive" &&
-        !existing.cancelled &&
-        existing.status !== "shipped"
-      )
-        return bad("Ship or cancel this order before archiving", 409);
-      if (b.action === "cancel" && existing.status === "shipped")
-        return bad("Shipped orders cannot be cancelled", 409);
-      const nextCancelled =
-        b.action === "cancel"
-          ? 1
-          : b.action === "restore"
-            ? existing.archived
-              ? existing.cancelled
-              : 0
-            : existing.cancelled;
-      run(
-        "UPDATE orders SET cancelled=?,archived=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        nextCancelled,
-        b.action === "archive" ? 1 : 0,
-        orderId,
-      );
-      activity(
-        currentUser,
-        orderId,
-        "order_" + b.action,
-        `${b.action} order #${orderId}.`,
-      );
-      return json({ ok: true });
+          return bad("Stop the active print first", 409);
+        if (!["cancel", "archive", "restore"].includes(b.action))
+          return bad("Choose cancel, archive or restore");
+        if (
+          b.action === "archive" &&
+          !existing.cancelled &&
+          existing.status !== "shipped"
+        )
+          return bad("Ship or cancel this order before archiving", 409);
+        if (b.action === "cancel" && existing.status === "shipped")
+          return bad("Shipped orders cannot be cancelled", 409);
+        const nextCancelled =
+          b.action === "cancel"
+            ? 1
+            : b.action === "restore"
+              ? existing.archived
+                ? existing.cancelled
+                : 0
+              : existing.cancelled;
+        updateVersion(
+          "UPDATE orders SET cancelled=?,archived=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          b.version,
+          nextCancelled,
+          b.action === "archive" ? 1 : 0,
+          orderId,
+        );
+        activity(
+          currentUser,
+          orderId,
+          "order_" + b.action,
+          `${b.action} order #${orderId}.`,
+        );
+        return json({ ok: true });
+      })();
     }
     const payment = path.match(/^\/api\/orders\/(\d+)\/payment$/);
     if (payment && req.method === "PUT") {
-      const b = await body(req),
-        orderId = id(payment[1]);
-      expectVersion("orders", orderId, b.version);
-      if (!["unpaid", "deposit", "paid", "refunded"].includes(b.payment_status))
-        return bad("Invalid payment status");
-      run(
-        "UPDATE orders SET payment_status=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        b.payment_status,
-        orderId,
-      );
-      activity(
-        currentUser,
-        orderId,
-        "payment_updated",
-        `Payment marked ${b.payment_status}.`,
-      );
-      return json({ ok: true });
+      const b = await body(req);
+      return db.transaction(() => {
+        const orderId = id(payment[1]);
+        expectVersion("orders", orderId, b.version);
+        if (
+          !["unpaid", "deposit", "paid", "refunded"].includes(b.payment_status)
+        )
+          return bad("Invalid payment status");
+        updateVersion(
+          "UPDATE orders SET payment_status=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          b.version,
+          b.payment_status,
+          orderId,
+        );
+        activity(
+          currentUser,
+          orderId,
+          "payment_updated",
+          `Payment marked ${b.payment_status}.`,
+        );
+        return json({ ok: true });
+      })();
     }
     const shipment = path.match(/^\/api\/orders\/(\d+)\/shipments$/);
     if (shipment && req.method === "POST") {
@@ -1545,16 +1574,18 @@ async function handleRequest(
       writableOrder(orderId);
       if (!Array.isArray(b.piece_ids) || !b.piece_ids.length)
         return bad("Select printed pieces to ship");
+      const pieceIds = new Set<number>(
+        b.piece_ids.map((v: unknown) => id(String(v))),
+      );
       db.transaction(() => {
+        writableOrder(orderId);
         const shipmentId = run(
           "INSERT INTO shipments(order_id,carrier,tracking) VALUES(?,?,?)",
           orderId,
           optional(b.carrier, 100),
           optional(b.tracking, 200),
         ).lastInsertRowid;
-        for (const pieceId of new Set(
-          b.piece_ids.map((v: unknown) => id(String(v))),
-        )) {
+        for (const pieceId of pieceIds) {
           const piece = one(
             "SELECT p.* FROM order_pieces p JOIN order_items i ON i.id=p.item_id WHERE p.id=? AND i.order_id=?",
             pieceId,
@@ -1565,7 +1596,7 @@ async function handleRequest(
               "A selected piece is no longer ready to ship",
               409,
             );
-          workshop.transition(
+          workshop.transitionInTransaction(
             piece.id,
             "ship",
             piece.version,
@@ -1588,7 +1619,7 @@ async function handleRequest(
           currentUser,
           orderId,
           "shipment_created",
-          `Dispatched ${b.piece_ids.length} pieces${b.tracking ? " · " + optional(b.tracking, 200) : ""}.`,
+          `Dispatched ${pieceIds.size} pieces${b.tracking ? " · " + optional(b.tracking, 200) : ""}.`,
         );
       })();
       if (
@@ -1749,51 +1780,57 @@ async function handleRequest(
     if (item && req.method === "PUT") {
       const b = await body(req),
         itemId = id(item[1]);
-      const existing = expectVersion("order_items", itemId, b.version);
-      const order = writableOrder(existing.order_id);
-      const productId =
-        b.product_id === null
-          ? null
-          : b.product_id === undefined
-            ? existing.product_id
-            : id(String(b.product_id));
-      const filamentId =
-        b.filament_id === undefined
-          ? existing.filament_id
-          : b.filament_id
-            ? id(String(b.filament_id))
-            : null;
-      const sameProduct = productId === existing.product_id;
-      const sameFilament = filamentId === existing.filament_id;
-      let product = sameProduct ? existing : itemProduct(b).product;
-      let filament =
-        sameProduct && sameFilament
-          ? { name: existing.filament_name, color: existing.color }
-          : filamentId
-            ? one(
-                "SELECT f.* FROM filaments f JOIN product_filaments pf ON pf.filament_id=f.id WHERE pf.product_id=? AND f.id=? AND f.archived=0",
-                productId,
-                filamentId,
-              )
-            : null;
-      if (filamentId && !filament)
-        return bad("That filament is not offered for this product");
-      const count = quantity(b.quantity, "Quantity", 1, 10000);
-      const printed = quantity(b.printed_quantity, "Printed count", 0, count);
-      const shipped = quantity(b.shipped_quantity, "Shipped count", 0, printed);
-      if (order.is_draft && (printed || shipped))
-        return bad("Confirm the sale before recording progress", 409);
-      if (
-        (!sameProduct || !sameFilament) &&
-        (existing.printed_quantity || existing.shipped_quantity)
-      )
-        return bad(
-          "Completed pieces cannot change product or filament. Add a separate item instead",
-          409,
+      return db.transaction(() => {
+        const existing = expectVersion("order_items", itemId, b.version);
+        const order = writableOrder(existing.order_id);
+        const productId =
+          b.product_id === null
+            ? null
+            : b.product_id === undefined
+              ? existing.product_id
+              : id(String(b.product_id));
+        const filamentId =
+          b.filament_id === undefined
+            ? existing.filament_id
+            : b.filament_id
+              ? id(String(b.filament_id))
+              : null;
+        const sameProduct = productId === existing.product_id;
+        const sameFilament = filamentId === existing.filament_id;
+        let product = sameProduct ? existing : itemProduct(b).product;
+        let filament =
+          sameProduct && sameFilament
+            ? { name: existing.filament_name, color: existing.color }
+            : filamentId
+              ? one(
+                  "SELECT f.* FROM filaments f JOIN product_filaments pf ON pf.filament_id=f.id WHERE pf.product_id=? AND f.id=? AND f.archived=0",
+                  productId,
+                  filamentId,
+                )
+              : null;
+        if (filamentId && !filament)
+          return bad("That filament is not offered for this product");
+        const count = quantity(b.quantity, "Quantity", 1, 10000);
+        const printed = quantity(b.printed_quantity, "Printed count", 0, count);
+        const shipped = quantity(
+          b.shipped_quantity,
+          "Shipped count",
+          0,
+          printed,
         );
-      db.transaction(() => {
-        run(
+        if (order.is_draft && (printed || shipped))
+          return bad("Confirm the sale before recording progress", 409);
+        if (
+          (!sameProduct || !sameFilament) &&
+          (existing.printed_quantity || existing.shipped_quantity)
+        )
+          return bad(
+            "Completed pieces cannot change product or filament. Add a separate item instead",
+            409,
+          );
+        updateVersion(
           "UPDATE order_items SET product_id=?,product_name=?,filament_id=?,filament_name=?,color=?,quantity=?,unit_price=?,grams_per_piece=?,minutes_per_piece=?,production_url=?,revision=?,print_profile=? WHERE id=?",
+          b.version,
           productId,
           sameProduct ? existing.product_name : product.name,
           filamentId,
@@ -1827,8 +1864,9 @@ async function handleRequest(
           "item_updated",
           `Corrected ${sameProduct ? existing.product_name : product.name}: ${count} ordered, ${printed} printed, ${shipped} shipped.`,
         );
+
+        return json({ ok: true });
       })();
-      return json({ ok: true });
     }
     if (item && req.method === "DELETE") {
       const itemId = id(item[1]);
@@ -1888,6 +1926,7 @@ const appServer = Bun.serve({
       req.method !== "GET" &&
       path.startsWith("/api/") &&
       ![
+        "/api/login",
         "/api/logout",
         "/api/notifications/test",
         "/api/push-subscriptions",
