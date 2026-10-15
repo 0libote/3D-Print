@@ -1,3 +1,4 @@
+import { useDecision } from "./useDecision";
 import { useFeatures } from "./Features";
 import { useEffect, useState } from "react";
 import type { Filament, Job, Order, ProductionDetails } from "../shared/models";
@@ -114,6 +115,7 @@ export function JobHistory({
     ...older.filter((j) => !jobs.some((current) => current.id === j.id)),
   ];
   async function loadOlder() {
+    if (loading) return;
     setLoading(true);
     setError("");
     try {
@@ -195,7 +197,7 @@ export function JobHistory({
             {error}
           </p>
         )}
-        {jobs.length >= 100 && !done && (
+        {visible.length > 0 && !done && (
           <button
             type="button"
             className="outline-button"
@@ -297,6 +299,7 @@ export function OrderOperations({
   api: Api;
   onWork: (work: () => Promise<unknown>) => void;
 }) {
+  const { confirm, decision } = useDecision();
   const features = useFeatures();
   const [carrier, setCarrier] = useState(""),
     [tracking, setTracking] = useState("");
@@ -335,6 +338,7 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
   return (
     <section className="panel order-operations">
       <h2>Order management</h2>
+      {decision}
       {features.material_tracking && (
         <p className="muted">
           Estimated material{" "}
@@ -464,9 +468,9 @@ ${escape(order.contact)}</p><p>Ship by: ${escape(order.ship_by || "Not set")}</p
             type="button"
             disabled={busy}
             className="danger-text"
-            onClick={() => {
+            onClick={async () => {
               if (
-                confirm(
+                await confirm(
                   "Cancel this order? Its history will be kept and its pieces removed from the queue.",
                 )
               )
@@ -581,15 +585,44 @@ export function StockHistory({
       actor_name: string;
     }[]
   >([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
     void api(`/filaments/${filamentId}/movements`)
-      .then(setRows)
-      .catch(console.error);
-  }, [filamentId]);
+      .then((next) => {
+        if (!cancelled) setRows(next);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filamentId, retry]);
   return (
     <details className="stock-history">
       <summary>Stock movement history</summary>
-      {rows.length ? (
+      {loading ? (
+        <p role="status">Loading stock history…</p>
+      ) : error ? (
+        <p role="alert" className="error">
+          {error}{" "}
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setRetry((value) => value + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      ) : rows.length ? (
         rows.map((r) => (
           <p key={r.id}>
             {r.detail} · {r.spool_delta > 0 ? "+" : ""}

@@ -1,5 +1,6 @@
+import { useDecision } from "./useDecision";
 import { useFeatures } from "./Features";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Printer, Truck } from "lucide-react";
 import type { PieceEntry } from "../shared/models";
 
@@ -9,7 +10,7 @@ type Props = {
   entries: PieceEntry[];
   activePieceId?: number;
   busy: boolean;
-  pendingKey?: string | null;
+  pending?: Record<string, boolean>;
   onAction: (
     entry: PieceEntry,
     action: PieceAction,
@@ -25,12 +26,13 @@ export function PieceQueue({
   entries,
   activePieceId,
   busy,
-  pendingKey = null,
+  pending = {},
   onAction,
   onOpen,
   emptyText,
   mode = "print",
 }: Props) {
+  const { confirm, prompt, decision } = useDecision();
   const features = useFeatures();
   const [printer, setPrinter] = useState(() => {
     try {
@@ -44,6 +46,16 @@ export function PieceQueue({
   });
   const [weights, setWeights] = useState<Record<number, string>>({});
   const [limit, setLimit] = useState(50);
+  const entryKey = entries
+    .map(
+      (entry) =>
+        `${entry.piece.id}:${entry.piece.version}:${entry.piece.status}:${entry.item.version}:${entry.item.grams_per_piece}`,
+    )
+    .join(",");
+  useEffect(() => {
+    setLimit(50);
+    setWeights({});
+  }, [entryKey]);
   const gramsFor = (id: number, fallback: number) => {
     const raw = Number(weights[id] ?? fallback);
     const base = Number.isFinite(raw)
@@ -55,6 +67,7 @@ export function PieceQueue({
   };
   return (
     <div className="piece-queue">
+      {decision}
       {mode === "print" && features.production_tools && (
         <div className="queue-printer">
           <label>
@@ -87,6 +100,7 @@ export function PieceQueue({
       ) : (
         entries.slice(0, limit).map((entry) => {
           const { order, item, piece } = entry;
+          const rowPending = busy || !!pending[`order:${order.id}`];
           const active = piece.status === "printing";
           return (
             <div
@@ -94,6 +108,8 @@ export function PieceQueue({
               key={piece.id}
             >
               <span
+                role="img"
+                aria-label={`Colour ${item.color}`}
                 className="print-swatch"
                 style={{ background: item.color }}
               />
@@ -149,13 +165,14 @@ export function PieceQueue({
                     type="button"
                     className="progress-button"
                     disabled={
-                      busy ||
+                      rowPending ||
+                      !!pending.printer ||
                       !!activePieceId ||
-                      pendingKey === `${piece.id}:start`
+                      rowPending
                     }
                     onClick={() => onAction(entry, "start", printer)}
                   >
-                    <Printer size={14} /> Start print
+                    <Printer aria-hidden="true" size={14} /> Start print
                   </button>
                 )}
                 {active && (
@@ -184,7 +201,7 @@ export function PieceQueue({
                     <button
                       type="button"
                       className="auth-submit"
-                      disabled={busy || pendingKey === `${piece.id}:complete`}
+                      disabled={rowPending}
                       onClick={() =>
                         onAction(
                           entry,
@@ -200,9 +217,9 @@ export function PieceQueue({
                     <button
                       type="button"
                       className="outline-button"
-                      disabled={busy || pendingKey === `${piece.id}:fail`}
-                      onClick={() => {
-                        const notes = prompt(
+                      disabled={rowPending}
+                      onClick={async () => {
+                        const notes = await prompt(
                           "Why did this print fail? It will return to the queue. The material weight shown will be deducted.",
                         );
                         if (notes !== null)
@@ -220,7 +237,7 @@ export function PieceQueue({
                     <button
                       type="button"
                       className="text-button"
-                      disabled={busy || pendingKey === `${piece.id}:stop`}
+                      disabled={rowPending}
                       onClick={() => onAction(entry, "stop")}
                     >
                       Stop without recording material use
@@ -232,18 +249,18 @@ export function PieceQueue({
                     <button
                       type="button"
                       className="progress-button"
-                      disabled={busy || pendingKey === `${piece.id}:ship`}
+                      disabled={rowPending}
                       onClick={() => onAction(entry, "ship")}
                     >
-                      <Truck size={14} /> Ship piece
+                      <Truck aria-hidden="true" size={14} /> Ship piece
                     </button>
                     <button
                       type="button"
                       className="text-button"
-                      disabled={busy || pendingKey === `${piece.id}:reprint`}
-                      onClick={() => {
+                      disabled={rowPending}
+                      onClick={async () => {
                         if (
-                          confirm(
+                          await confirm(
                             "Requeue this unshipped piece for a replacement print?",
                           )
                         )

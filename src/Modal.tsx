@@ -1,4 +1,5 @@
-import React, { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import React, { useEffect, useRef, useId } from "react";
 
 export function Modal({
   children,
@@ -9,6 +10,7 @@ export function Modal({
   onClose: () => void;
   busy: boolean;
 }) {
+  const headingId = useId();
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -17,6 +19,14 @@ export function Modal({
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const dialog = ref.current!;
+    const previousDialog = [
+      ...document.querySelectorAll<HTMLElement>('[role="dialog"]'),
+    ]
+      .filter((element) => element !== dialog)
+      .at(-1);
+    if (previousDialog) previousDialog.inert = true;
+    const heading = dialog.querySelector("h2");
+    if (heading) heading.id = headingId;
     const viewport = window.visualViewport;
     const overlay = dialog.parentElement!;
     const fitViewport = () => {
@@ -56,6 +66,7 @@ export function Modal({
       ) || dialog
     ).focus({ preventScroll: true });
     const handler = (e: KeyboardEvent) => {
+      if (dialog.inert) return;
       if (e.key === "Escape" && !pending.current) {
         e.preventDefault();
         close.current();
@@ -88,16 +99,19 @@ export function Modal({
       viewport?.removeEventListener("scroll", fitViewport);
       window.removeEventListener("resize", fitViewport);
       document.removeEventListener("keydown", handler);
-      if (main instanceof HTMLElement) main.inert = false;
-      if (sidebar instanceof HTMLElement) sidebar.inert = false;
-      if (toast instanceof HTMLElement) toast.inert = false;
-      if (notice instanceof HTMLElement) notice.inert = false;
+      if (previousDialog) previousDialog.inert = false;
+      if (main instanceof HTMLElement && !previousDialog) main.inert = false;
+      if (sidebar instanceof HTMLElement && !previousDialog)
+        sidebar.inert = false;
+      if (toast instanceof HTMLElement && !previousDialog) toast.inert = false;
+      if (notice instanceof HTMLElement && !previousDialog)
+        notice.inert = false;
       Object.assign(document.body.style, bodyStyle);
       window.scrollTo(0, scrollY);
       previous?.focus({ preventScroll: true });
     };
   }, []);
-  return (
+  return createPortal(
     <div
       className="overlay modal-overlay"
       onMouseDown={(e) => {
@@ -108,12 +122,14 @@ export function Modal({
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="dialog-heading"
+        aria-busy={busy}
+        aria-labelledby={headingId}
         tabIndex={-1}
         ref={ref}
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

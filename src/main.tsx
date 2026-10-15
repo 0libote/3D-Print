@@ -47,6 +47,7 @@ import {
 } from "../shared/models";
 import { PieceQueue, type PieceAction } from "./PieceQueue";
 import { OrdersBrowser } from "./OrdersBrowser";
+import { useDecision } from "./useDecision";
 import { Modal } from "./Modal";
 import {
   StudioOverview,
@@ -244,8 +245,23 @@ function App() {
       heading.focus({ preventScroll: true });
     }
   }, [page, selectedOrder]);
-  const [showArchivedCatalogue, setShowArchivedCatalogue] = useState(false);
-  const [catalogueSearch, setCatalogueSearch] = useState("");
+  const [catalogueFilters, setCatalogueFilters] = useState({
+    products: { search: "", archived: false },
+    filaments: { search: "", archived: false },
+  });
+  const catalogueTab = page === "filaments" ? "filaments" : "products";
+  const { search: catalogueSearch, archived: showArchivedCatalogue } =
+    catalogueFilters[catalogueTab];
+  const setCatalogueSearch = (search: string) =>
+    setCatalogueFilters((current) => ({
+      ...current,
+      [catalogueTab]: { ...current[catalogueTab], search },
+    }));
+  const setShowArchivedCatalogue = (archived: boolean) =>
+    setCatalogueFilters((current) => ({
+      ...current,
+      [catalogueTab]: { ...current[catalogueTab], archived },
+    }));
   const [queueFilter, setQueueFilter] = useState<"all" | "queued" | "printing">(
     "all",
   );
@@ -253,57 +269,133 @@ function App() {
     localStorage.getItem("printroom-theme") === "dark" ? "dark" : "light",
   );
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [pendingPiece, setPendingPiece] = useState<string | null>(null);
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const pendingRef = useRef(new Set<string>());
+  const refreshNeeded = useRef(false);
+  const activeMutations = useRef(new Set<string>());
+  const settledKeys = useRef(new Set<string>());
+  const { confirm, decision } = useDecision();
+  const dialogKey =
+    dialog && (dialog.type === "item" || dialog.type === "edit_item")
+      ? `order:${dialog.order.id}`
+      : dialog && "value" in dialog && dialog.value
+        ? `${dialog.type === "password" ? "user" : dialog.type}:${dialog.value.id}`
+        : `create:${dialog?.type ?? "order"}`;
+  const busy = !!pending[dialog ? dialogKey : `order:${selectedOrder}`];
   const [updateWorker, setUpdateWorker] = useState<ServiceWorker | null>(null);
   const [live, setLive] = useState(false);
-  const requestNumber = useRef(0),
-    mutation = useRef(false);
+  const requestNumber = useRef(0);
   const selectedRef = useRef(selectedOrder);
   selectedRef.current = selectedOrder;
   const [orderActivity, setOrderActivity] = useState<ActivityEntry[]>([]);
-  const refresh = async () => {
-    const current = ++requestNumber.current;
-    const next = await api(
-      `/bootstrap${selectedRef.current ? `?order=${selectedRef.current}` : ""}`,
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
+  const [activityRetry, setActivityRetry] = useState(0);
+  const activityGeneration = useRef(0);
+  function releaseSettled() {
+    for (const id of settledKeys.current) pendingRef.current.delete(id);
+    settledKeys.current.clear();
+    setPending(
+      Object.fromEntries([...pendingRef.current].map((id) => [id, true])),
     );
-    if (current === requestNumber.current) setData(next);
+  }
+  const refresh = async () => {
+    if (activeMutations.current.size) {
+      refreshNeeded.current = true;
+      return;
+    }
+    refreshNeeded.current = false;
+    const current = ++requestNumber.current;
+    try {
+      const next = await api(
+        `/bootstrap${selectedRef.current ? `?order=${selectedRef.current}` : ""}`,
+      );
+      if (current === requestNumber.current) {
+        setData(next);
+        releaseSettled();
+      }
+    } catch (error) {
+      if (current === requestNumber.current) releaseSettled();
+      throw error;
+    }
   };
+
   useEffect(() => {
+    const generation = ++activityGeneration.current;
     setOrderActivity([]);
+    setActivityError("");
+    setActivityLoading(!!selectedOrder);
     if (selectedOrder)
       void api(`/orders/${selectedOrder}/activity`)
-        .then(setOrderActivity)
-        .catch((e) => setError(e.message));
+        .then((rows) => {
+          if (generation === activityGeneration.current) setOrderActivity(rows);
+        })
+        .catch((e) => {
+          if (generation === activityGeneration.current)
+            setActivityError(e.message);
+        })
+        .finally(() => {
+          if (generation === activityGeneration.current)
+            setActivityLoading(false);
+        });
+    return () => {
+      ++activityGeneration.current;
+    };
   }, [
     selectedOrder,
     data?.orders.find((o) => o.id === selectedOrder)?.version,
+    activityRetry,
   ]);
+  async function moreActivity() {
+    if (!selectedOrder || activityLoading) return;
+    const generation = activityGeneration.current;
+    setActivityLoading(true);
+    setActivityError("");
+    try {
+      const rows = await api(
+        `/orders/${selectedOrder}/activity?before=${orderActivity.at(-1)?.id || ""}`,
+      );
+      if (generation === activityGeneration.current)
+        setOrderActivity((current) => [...current, ...rows]);
+    } catch (e) {
+      if (generation === activityGeneration.current)
+        setActivityError(
+          e instanceof Error ? e.message : "Could not load activity",
+        );
+    } finally {
+      if (generation === activityGeneration.current) setActivityLoading(false);
+    }
+  }
   useEffect(() => {
     if (selectedOrder) void refresh().catch((e) => setError(e.message));
   }, [selectedOrder]);
   const signOut = () =>
-    action(async () => {
-      try {
-        if ("serviceWorker" in navigator) {
-          const registration = await navigator.serviceWorker.getRegistration();
-          const subscription =
-            await registration?.pushManager?.getSubscription();
-          if (subscription) {
-            try {
-              await api("/push-subscriptions", "DELETE", {
-                endpoint: subscription.endpoint,
-              });
-            } finally {
-              await subscription.unsubscribe();
+    action(
+      async () => {
+        try {
+          if ("serviceWorker" in navigator) {
+            const registration =
+              await navigator.serviceWorker.getRegistration();
+            const subscription =
+              await registration?.pushManager?.getSubscription();
+            if (subscription) {
+              try {
+                await api("/push-subscriptions", "DELETE", {
+                  endpoint: subscription.endpoint,
+                });
+              } finally {
+                await subscription.unsubscribe();
+              }
             }
           }
+        } catch (error) {
+          console.warn("Push cleanup failed", error);
         }
-      } catch (error) {
-        console.warn("Push cleanup failed", error);
-      }
-      await api("/logout", "POST");
-    }, false);
+        await api("/logout", "POST");
+      },
+      false,
+      "session",
+    );
   useEffect(() => {
     refresh().catch((e) => setError(e.message));
     if (!import.meta.env.DEV && "serviceWorker" in navigator)
@@ -374,24 +466,114 @@ function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("printroom-theme", theme);
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", theme === "dark" ? "#151719" : "#f7f7f5");
   }, [theme]);
-  async function action(work: () => Promise<unknown>, close = true) {
-    if (mutation.current) return;
-    mutation.current = true;
-    setBusy(true);
+  async function action(
+    work: () => Promise<unknown>,
+    close = true,
+    key = dialog ? dialogKey : `order:${selectedOrder}`,
+    reload = true,
+    locks: string[] = [],
+  ) {
+    if ([key, ...locks].some((id) => pendingRef.current.has(id))) return;
+    const openedDialog = dialog;
+    activeMutations.current.add(key);
+    for (const id of [key, ...locks]) pendingRef.current.add(id);
+    ++requestNumber.current;
+    setPending(
+      Object.fromEntries([...pendingRef.current].map((id) => [id, true])),
+    );
     setError("");
     try {
       await work();
-      await refresh();
-      if (close) setDialog(null);
+      if (close)
+        setDialog((current) => (current === openedDialog ? null : current));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
-      mutation.current = false;
-      setBusy(false);
+      activeMutations.current.delete(key);
+      for (const id of [key, ...locks]) settledKeys.current.add(id);
+      refreshNeeded.current ||= reload;
+      // Keep conflicts disabled until the final response has reconciled the batch.
+      if (!activeMutations.current.size) {
+        if (refreshNeeded.current) {
+          try {
+            await refresh();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : "Refresh failed");
+          }
+        } else {
+          releaseSettled();
+        }
+      }
     }
   }
-  if (!data) return <div className="loading">Loading Printroom… {error}</div>;
+
+  function adjustStock(filament: Filament, delta: number) {
+    void action(
+      async () => {
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              filaments: current.filaments.map((f) =>
+                f.id === filament.id
+                  ? {
+                      ...f,
+                      spool_count: f.spool_count + delta,
+                      remaining_grams: Math.max(
+                        0,
+                        f.remaining_grams + delta * f.grams_per_spool,
+                      ),
+                      version: f.version + 1,
+                    }
+                  : f,
+              ),
+            },
+        );
+        try {
+          await api(`/filaments/${filament.id}/stock`, "PUT", { delta });
+        } catch (error) {
+          setData(
+            (current) =>
+              current && {
+                ...current,
+                filaments: current.filaments.map((f) =>
+                  f.id === filament.id ? filament : f,
+                ),
+              },
+          );
+          throw error;
+        }
+      },
+      false,
+      `filament:${filament.id}`,
+      false,
+    );
+  }
+  if (!data)
+    return (
+      <div className="loading">
+        {error ? (
+          <>
+            <p role="alert">{error}</p>
+            <button
+              className="outline-button"
+              onClick={() => {
+                setError("");
+                void refresh().catch((e) => setError(e.message));
+              }}
+            >
+              Retry
+            </button>
+          </>
+        ) : (
+          <p role="status">Loading Printroom…</p>
+        )}
+      </div>
+    );
   if (!data.user) return <Auth setup={data.needsSetup} onDone={refresh} />;
 
   const chosen = data.orders.find((o) => o.id === selectedOrder) || null;
@@ -410,22 +592,20 @@ function App() {
     notes = "",
     actualGrams?: number,
   ) => {
-    const key = `${entry.piece.id}:${step}`;
-    if (pendingPiece === key) return;
-    setPendingPiece(key);
-    setError("");
-    void api(`/pieces/${entry.piece.id}/action`, "POST", {
-      action: step,
-      version: entry.piece.version,
-      printer,
-      notes,
-      actual_grams: actualGrams,
-    })
-      .then(() => refresh())
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "Something went wrong"),
-      )
-      .finally(() => setPendingPiece(null));
+    void action(
+      () =>
+        api(`/pieces/${entry.piece.id}/action`, "POST", {
+          action: step,
+          version: entry.piece.version,
+          printer,
+          notes,
+          actual_grams: actualGrams,
+        }),
+      false,
+      `order:${entry.order.id}`,
+      true,
+      step === "start" ? ["printer"] : [],
+    );
   };
   const tabs: {
     id: Page;
@@ -433,17 +613,21 @@ function App() {
     icon: React.ReactNode;
     count?: number;
   }[] = [
-    { id: "overview", label: "Overview", icon: <LayoutDashboard size={20} /> },
+    {
+      id: "overview",
+      label: "Overview",
+      icon: <LayoutDashboard aria-hidden="true" size={20} />,
+    },
     {
       id: "queue",
       label: "Queue",
-      icon: <ListTodo size={20} />,
+      icon: <ListTodo aria-hidden="true" size={20} />,
       count: queue.length,
     },
     {
       id: "orders",
       label: "Orders",
-      icon: <ClipboardList size={20} />,
+      icon: <ClipboardList aria-hidden="true" size={20} />,
       count: data.orders.filter((o) => o.is_draft).length,
     },
     ...(data.settings.production_tools
@@ -451,16 +635,34 @@ function App() {
           {
             id: "jobs" as Page,
             label: "Print history",
-            icon: <Printer size={20} />,
+            icon: <Printer aria-hidden="true" size={20} />,
           },
         ]
       : []),
-    { id: "products", label: "Products", icon: <Boxes size={20} /> },
-    { id: "filaments", label: "Filaments", icon: <Layers3 size={20} /> },
+    {
+      id: "products",
+      label: "Products",
+      icon: <Boxes aria-hidden="true" size={20} />,
+    },
+    {
+      id: "filaments",
+      label: "Filaments",
+      icon: <Layers3 aria-hidden="true" size={20} />,
+    },
     ...(data.user.is_admin
-      ? [{ id: "team" as Page, label: "Team", icon: <Users size={20} /> }]
+      ? [
+          {
+            id: "team" as Page,
+            label: "Team",
+            icon: <Users aria-hidden="true" size={20} />,
+          },
+        ]
       : []),
-    { id: "settings", label: "Settings", icon: <Settings2 size={20} /> },
+    {
+      id: "settings",
+      label: "Settings",
+      icon: <Settings2 aria-hidden="true" size={20} />,
+    },
   ];
   const openOrder = (id: number) => {
     setPage("orders");
@@ -479,7 +681,7 @@ function App() {
         <aside className="sidebar">
           <div className="brand">
             <div className="brand-icon">
-              <Printer size={23} strokeWidth={2.3} />
+              <Printer aria-hidden="true" size={23} strokeWidth={2.3} />
             </div>
             <span {...stylex.props(styles.brand)}>
               printroom<span className="brand-dot">.</span>
@@ -516,8 +718,14 @@ function App() {
                 <strong>{data.user.name}</strong>
                 <small>{data.user.username}</small>
               </span>
-              <button type="button" title="Sign out" onClick={signOut}>
-                <LogOut size={18} />
+              <button
+                type="button"
+                title="Sign out"
+                aria-label="Sign out"
+                disabled={Object.keys(pending).length > 0}
+                onClick={signOut}
+              >
+                <LogOut aria-hidden="true" size={18} />
               </button>
             </div>
           </div>
@@ -526,6 +734,8 @@ function App() {
           <header className="topbar">
             <div className="top-right">
               <span
+                role="status"
+                aria-live="polite"
                 className={`live-status${live ? " connected" : ""}`}
                 title={
                   live
@@ -533,8 +743,8 @@ function App() {
                     : "Changes are checked periodically"
                 }
               >
-                <i />
-                {live ? "Live" : ""}
+                <i aria-hidden="true" />
+                {live ? "Live" : "Reconnecting"}
               </span>
               <button
                 className="theme-toggle"
@@ -545,7 +755,11 @@ function App() {
                 }
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               >
-                {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+                {theme === "dark" ? (
+                  <Sun aria-hidden="true" size={19} />
+                ) : (
+                  <Moon aria-hidden="true" size={19} />
+                )}
               </button>
             </div>
           </header>
@@ -559,7 +773,7 @@ function App() {
                   <Button
                     label="New draft"
                     variant="primary"
-                    icon={<Plus size={17} />}
+                    icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "order" })}
                   />
                 </div>
@@ -595,14 +809,14 @@ function App() {
                       className="text-button"
                       onClick={() => setPage("queue")}
                     >
-                      Full queue <ArrowRight size={16} />
+                      Full queue <ArrowRight aria-hidden="true" size={16} />
                     </button>
                   </div>
                   <PieceQueue
                     entries={queue.slice(0, 6)}
                     activePieceId={activePieceId}
-                    busy={busy}
-                    pendingKey={pendingPiece}
+                    busy={false}
+                    pending={pending}
                     onAction={pieceAction}
                     onOpen={openOrder}
                     emptyText="Confirm a draft sale to add its prints to this queue."
@@ -618,7 +832,7 @@ function App() {
                       className="text-button"
                       onClick={() => setPage("orders")}
                     >
-                      All orders <ArrowRight size={16} />
+                      All orders <ArrowRight aria-hidden="true" size={16} />
                     </button>
                   </div>
                   <div className="recent-list">
@@ -629,7 +843,7 @@ function App() {
                         onClick={() => openOrder(order.id)}
                       >
                         <span className="queue-icon">
-                          <Package size={19} />
+                          <Package aria-hidden="true" size={19} />
                         </span>
                         <span>
                           <strong>
@@ -648,7 +862,7 @@ function App() {
                     {!data.orders.length && (
                       <Empty
                         small
-                        icon={<ClipboardList />}
+                        icon={<ClipboardList aria-hidden="true" />}
                         title="No orders yet"
                         text="Create a draft to get started."
                       />
@@ -672,7 +886,7 @@ function App() {
                   <Button
                     label="New draft"
                     variant="primary"
-                    icon={<Plus size={17} />}
+                    icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "order" })}
                   />
                 </div>
@@ -681,6 +895,7 @@ function App() {
                     <button
                       type="button"
                       key={stage}
+                      aria-pressed={queueFilter === stage}
                       className={queueFilter === stage ? "selected" : ""}
                       onClick={() => setQueueFilter(stage)}
                     >
@@ -703,8 +918,8 @@ function App() {
                         entry.piece.status === queueFilter,
                     )}
                     activePieceId={activePieceId}
-                    busy={busy}
-                    pendingKey={pendingPiece}
+                    busy={false}
+                    pending={pending}
                     onAction={pieceAction}
                     onOpen={openOrder}
                     emptyText="Confirm a draft sale to add prints here. Each completed piece moves to Ready to ship below."
@@ -725,8 +940,8 @@ function App() {
                   <PieceQueue
                     entries={ready}
                     activePieceId={activePieceId}
-                    busy={busy}
-                    pendingKey={pendingPiece}
+                    busy={false}
+                    pending={pending}
                     onAction={pieceAction}
                     mode="ship"
                     onOpen={openOrder}
@@ -741,8 +956,8 @@ function App() {
                   order={chosen}
                   showMoney={data.settings.show_money}
                   currency={chosen.currency}
-                  busy={busy}
-                  pendingKey={pendingPiece}
+                  busy={!!pending[`order:${chosen.id}`]}
+                  pending={pending}
                   onBack={() => setSelectedOrder(null)}
                   onEdit={() => setDialog({ type: "order", value: chosen })}
                   onAddItem={() => setDialog({ type: "item", order: chosen })}
@@ -758,29 +973,35 @@ function App() {
                     setDialog({ type: "edit_item", order: chosen, value: item })
                   }
                   activity={orderActivity}
-                  onMoreActivity={() =>
-                    void api(
-                      `/orders/${chosen.id}/activity?before=${orderActivity.at(-1)?.id || ""}`,
-                    )
-                      .then((next) =>
-                        setOrderActivity([...orderActivity, ...next]),
-                      )
-                      .catch((e) => setError(e.message))
+                  activityLoading={activityLoading}
+                  activityError={activityError}
+                  onRetryActivity={() =>
+                    setActivityRetry((current) => current + 1)
                   }
-                  onOrderWork={(work) => void action(work, false)}
-                  onDeleteItem={(itemId) => {
-                    if (confirm("Remove this item?"))
+                  onMoreActivity={() => void moreActivity()}
+                  onOrderWork={(work) =>
+                    void action(work, false, `order:${chosen.id}`)
+                  }
+                  onDeleteItem={async (itemId) => {
+                    if (await confirm("Remove this item?"))
                       void action(
                         () => api(`/items/${itemId}`, "DELETE"),
                         false,
+                        `order:${chosen.id}`,
                       );
                   }}
-                  onDelete={() => {
-                    if (confirm("Delete this order and all its items?"))
-                      void action(async () => {
-                        await api(`/orders/${chosen.id}`, "DELETE");
-                        setSelectedOrder(null);
-                      }, false);
+                  onDelete={async () => {
+                    if (await confirm("Delete this order and all its items?"))
+                      void action(
+                        async () => {
+                          await api(`/orders/${chosen.id}`, "DELETE");
+                          setSelectedOrder((current) =>
+                            current === chosen.id ? null : current,
+                          );
+                        },
+                        false,
+                        `order:${chosen.id}`,
+                      );
                   }}
                 />
               ) : (
@@ -811,7 +1032,7 @@ function App() {
                   <Button
                     label="Add product"
                     variant="primary"
-                    icon={<Plus size={17} />}
+                    icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "product" })}
                   />
                 </div>
@@ -824,7 +1045,7 @@ function App() {
                   Show archived catalogue entries
                 </label>
                 <div className="search catalogue-search">
-                  <Search size={18} />
+                  <Search aria-hidden="true" size={18} />
                   <input
                     aria-label="Search products"
                     placeholder="Search products…"
@@ -850,7 +1071,11 @@ function App() {
                             {product.image_url ? (
                               <img src={product.image_url} alt={product.name} />
                             ) : (
-                              <Boxes size={42} strokeWidth={1.4} />
+                              <Boxes
+                                aria-hidden="true"
+                                size={42}
+                                strokeWidth={1.4}
+                              />
                             )}
                           </div>
                           <div className="product-body">
@@ -872,6 +1097,8 @@ function App() {
                                   return filament ? (
                                     <span
                                       key={fid}
+                                      role="img"
+                                      aria-label={`${filament.name}: ${filament.color}`}
                                       title={filament.name}
                                       style={{ background: filament.color }}
                                     />
@@ -885,7 +1112,7 @@ function App() {
                                 <button
                                   type="button"
                                   className="outline-button"
-                                  disabled={busy}
+                                  disabled={!!pending[`product:${product.id}`]}
                                   onClick={() =>
                                     void action(
                                       () =>
@@ -895,6 +1122,7 @@ function App() {
                                           { version: product.version },
                                         ),
                                       false,
+                                      `product:${product.id}`,
                                     )
                                   }
                                 >
@@ -906,11 +1134,12 @@ function App() {
                                 className="icon-button"
                                 title="Edit product"
                                 aria-label={`Edit product ${product.name}`}
+                                disabled={!!pending[`product:${product.id}`]}
                                 onClick={() =>
                                   setDialog({ type: "product", value: product })
                                 }
                               >
-                                <Pencil size={18} />
+                                <Pencil aria-hidden="true" size={18} />
                               </button>
                             </div>
                           </div>
@@ -919,7 +1148,7 @@ function App() {
                   </div>
                 ) : (
                   <Empty
-                    icon={<Boxes />}
+                    icon={<Boxes aria-hidden="true" />}
                     title="Build your catalogue"
                     text="Add a product, then choose which filament colours you can offer."
                     action="Add product"
@@ -939,7 +1168,7 @@ function App() {
                   <Button
                     label="Add filament"
                     variant="primary"
-                    icon={<Plus size={17} />}
+                    icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "filament" })}
                   />
                 </div>
@@ -952,7 +1181,7 @@ function App() {
                   Show archived catalogue entries
                 </label>
                 <div className="search catalogue-search">
-                  <Search size={18} />
+                  <Search aria-hidden="true" size={18} />
                   <input
                     aria-label="Search filaments"
                     placeholder="Search filaments…"
@@ -982,7 +1211,10 @@ function App() {
                                 alt={`${filament.name} spool`}
                               />
                             ) : (
-                              <div className="filament-ring" />
+                              <div
+                                className="filament-ring"
+                                aria-hidden="true"
+                              />
                             )}
                           </div>
                           <div className="filament-info">
@@ -995,7 +1227,7 @@ function App() {
                               {filament.color.toUpperCase()}
                             </p>
                             {filament.notes && <small>{filament.notes}</small>}
-                            <div className="stock-count">
+                            <div className="stock-count" aria-live="polite">
                               <strong>
                                 {filament.spool_count}{" "}
                                 {filament.spool_count === 1
@@ -1013,38 +1245,24 @@ function App() {
                               <button
                                 type="button"
                                 aria-label={`Remove one ${filament.name} spool`}
-                                onClick={() =>
-                                  action(
-                                    () =>
-                                      api(
-                                        `/filaments/${filament.id}/stock`,
-                                        "PUT",
-                                        { delta: -1 },
-                                      ),
-                                    false,
-                                  )
+                                onClick={() => adjustStock(filament, -1)}
+                                disabled={
+                                  !!pending[`filament:${filament.id}`] ||
+                                  filament.spool_count === 0
                                 }
-                                disabled={busy || filament.spool_count === 0}
                               >
-                                <Minus size={15} />
+                                <Minus aria-hidden="true" size={15} />
                               </button>
                               <button
                                 type="button"
                                 aria-label={`Add one ${filament.name} spool`}
-                                disabled={busy}
-                                onClick={() =>
-                                  action(
-                                    () =>
-                                      api(
-                                        `/filaments/${filament.id}/stock`,
-                                        "PUT",
-                                        { delta: 1 },
-                                      ),
-                                    false,
-                                  )
+                                disabled={
+                                  !!pending[`filament:${filament.id}`] ||
+                                  filament.spool_count >= 100000
                                 }
+                                onClick={() => adjustStock(filament, 1)}
                               >
-                                <Plus size={15} />
+                                <Plus aria-hidden="true" size={15} />
                               </button>
                             </div>
                           </div>
@@ -1052,7 +1270,7 @@ function App() {
                             <button
                               type="button"
                               className="outline-button"
-                              disabled={busy}
+                              disabled={!!pending[`filament:${filament.id}`]}
                               onClick={() =>
                                 void action(
                                   () =>
@@ -1062,6 +1280,7 @@ function App() {
                                       { version: filament.version },
                                     ),
                                   false,
+                                  `filament:${filament.id}`,
                                 )
                               }
                             >
@@ -1072,18 +1291,20 @@ function App() {
                             type="button"
                             className="icon-button"
                             title="Edit filament"
+                            aria-label={`Edit filament ${filament.name}`}
+                            disabled={!!pending[`filament:${filament.id}`]}
                             onClick={() =>
                               setDialog({ type: "filament", value: filament })
                             }
                           >
-                            <Pencil size={18} />
+                            <Pencil aria-hidden="true" size={18} />
                           </button>
                         </article>
                       ))}
                   </div>
                 ) : (
                   <Empty
-                    icon={<Layers3 />}
+                    icon={<Layers3 aria-hidden="true" />}
                     title="Start your colour library"
                     text="Add your first spool to make it available for products."
                     action="Add filament"
@@ -1113,7 +1334,7 @@ function App() {
                   <Button
                     label="Add user"
                     variant="primary"
-                    icon={<Plus size={17} />}
+                    icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "user" })}
                   />
                 </div>
@@ -1134,6 +1355,7 @@ function App() {
                         <button
                           type="button"
                           className="outline-button"
+                          disabled={!!pending[`user:${user.id}`]}
                           onClick={() =>
                             setDialog({ type: "password", value: user })
                           }
@@ -1144,15 +1366,17 @@ function App() {
                           <button
                             type="button"
                             className="danger-text"
-                            onClick={() => {
+                            disabled={!!pending[`user:${user.id}`]}
+                            onClick={async () => {
                               if (
-                                confirm(
+                                await confirm(
                                   `Delete ${user.name}? They will lose access immediately. Existing orders and products will remain.`,
                                 )
                               )
                                 void action(
                                   () => api(`/users/${user.id}`, "DELETE"),
                                   false,
+                                  `user:${user.id}`,
                                 );
                             }}
                           >
@@ -1193,7 +1417,7 @@ function App() {
                 aria-label="Close"
                 disabled={busy}
               >
-                <X size={21} />
+                <X aria-hidden="true" size={21} />
               </button>
             </div>
             {dialog.type === "order" && (
@@ -1226,9 +1450,9 @@ function App() {
                 }
                 onDelete={
                   dialog.value
-                    ? () => {
+                    ? async () => {
                         if (
-                          confirm(
+                          await confirm(
                             "Archive this filament? Existing orders keep their details.",
                           )
                         )
@@ -1260,9 +1484,9 @@ function App() {
                 }
                 onDelete={
                   dialog.value
-                    ? () => {
+                    ? async () => {
                         if (
-                          confirm(
+                          await confirm(
                             "Archive this product? Existing orders keep their details.",
                           )
                         )
@@ -1322,9 +1546,14 @@ function App() {
                 }
               />
             )}
-            {error && <p className="error modal-error">{error}</p>}
+            {error && (
+              <p role="alert" className="error modal-error">
+                {error}
+              </p>
+            )}
           </Modal>
         )}
+        {decision}
         {updateWorker && !dialog && (
           <div className="update-notice" role="status">
             An update is ready.{" "}
@@ -1352,7 +1581,7 @@ function App() {
               aria-label="Dismiss error"
               onClick={() => setError("")}
             >
-              <X size={16} />
+              <X aria-hidden="true" size={16} />
             </button>
           </div>
         )}
@@ -1364,10 +1593,31 @@ function App() {
 function ActivityList({
   entries,
   onOpen,
+  loading = false,
+  error = "",
+  onRetry,
 }: {
   entries: ActivityEntry[];
+  loading?: boolean;
+  error?: string;
+  onRetry?: () => void;
   onOpen?: (id: number) => void;
 }) {
+  if (loading)
+    return (
+      <p role="status" className="muted activity-empty">
+        Loading activity…
+      </p>
+    );
+  if (error)
+    return (
+      <p role="alert" className="error">
+        {error}{" "}
+        <button type="button" className="text-button" onClick={onRetry}>
+          Retry
+        </button>
+      </p>
+    );
   if (!entries.length)
     return (
       <p className="muted activity-empty">
@@ -1400,7 +1650,7 @@ function ActivityList({
               className="text-button"
               onClick={() => onOpen(entry.order_id!)}
             >
-              #{entry.order_id} <ArrowRight size={14} />
+              #{entry.order_id} <ArrowRight aria-hidden="true" size={14} />
             </button>
           )}
         </div>
@@ -1414,7 +1664,7 @@ function OrderDetail({
   showMoney,
   currency,
   busy,
-  pendingKey,
+  pending,
   onBack,
   onEdit,
   onAddItem,
@@ -1424,6 +1674,9 @@ function OrderDetail({
   onEditItem,
   activity,
   onMoreActivity,
+  activityLoading,
+  activityError,
+  onRetryActivity,
   onOrderWork,
   onDeleteItem,
   onDelete,
@@ -1432,7 +1685,7 @@ function OrderDetail({
   showMoney: boolean;
   currency: string;
   busy: boolean;
-  pendingKey?: string | null;
+  pending?: Record<string, boolean>;
   onBack: () => void;
   onEdit: () => void;
   onAddItem: () => void;
@@ -1448,6 +1701,9 @@ function OrderDetail({
   onEditItem: (item: Item) => void;
   activity: ActivityEntry[];
   onMoreActivity: () => void;
+  activityLoading: boolean;
+  activityError: string;
+  onRetryActivity: () => void;
   onOrderWork: (work: () => Promise<unknown>) => void;
   onDeleteItem: (itemId: number) => void;
   onDelete: () => void;
@@ -1468,7 +1724,7 @@ function OrderDetail({
   return (
     <div className="order-detail-page">
       <button type="button" className="back-link" onClick={onBack}>
-        <ArrowLeft size={18} /> All orders
+        <ArrowLeft aria-hidden="true" size={18} /> All orders
       </button>
       <div className="order-detail-heading">
         <div>
@@ -1489,14 +1745,19 @@ function OrderDetail({
           </div>
         </div>
         <div className="detail-heading-actions">
-          <button type="button" className="outline-button" onClick={onEdit}>
-            <Pencil size={16} /> Edit details
+          <button
+            type="button"
+            className="outline-button"
+            disabled={busy}
+            onClick={onEdit}
+          >
+            <Pencil aria-hidden="true" size={16} /> Edit details
           </button>
           {!!order.is_draft && (
             <Button
               label={busy ? "Confirming…" : "Confirm sale"}
               variant="primary"
-              icon={<CheckCircle2 size={18} />}
+              icon={<CheckCircle2 aria-hidden="true" size={18} />}
               isDisabled={
                 busy ||
                 !!order.cancelled ||
@@ -1506,12 +1767,27 @@ function OrderDetail({
               onClick={onConfirm}
             />
           )}
+          {!!order.is_draft &&
+            (busy ||
+              !!order.cancelled ||
+              !!order.archived ||
+              !order.items.length) && (
+              <p className="muted">
+                {busy
+                  ? "An update to this order is pending."
+                  : order.archived
+                    ? "Restore this archived order to confirm it."
+                    : order.cancelled
+                      ? "Restore this cancelled order to confirm it."
+                      : "Add at least one print item to confirm this sale."}
+              </p>
+            )}
         </div>
       </div>
       {!!order.is_draft && (
         <div className="draft-callout">
           <span>
-            <ClipboardList size={24} />
+            <ClipboardList aria-hidden="true" size={24} />
           </span>
           <div>
             <strong>This order is still a draft</strong>
@@ -1535,7 +1811,7 @@ function OrderDetail({
                 )}
                 activePieceId={activePieceId}
                 busy={busy}
-                pendingKey={pendingKey}
+                pending={pending}
                 onAction={onAction}
                 onOpen={() => {}}
                 emptyText="All pieces shipped."
@@ -1557,14 +1833,23 @@ function OrderDetail({
                 disabled={busy || !!order.cancelled || !!order.archived}
                 onClick={onAddItem}
               >
-                <Plus size={17} /> Add item
+                <Plus aria-hidden="true" size={17} /> Add item
               </button>
             </div>
+            {(busy || !!order.cancelled || !!order.archived) && (
+              <p className="muted">
+                {busy
+                  ? "Wait for this order update before adding an item."
+                  : "Restore this order before adding an item."}
+              </p>
+            )}
             {order.items.length ? (
               <div className="detail-item-list">
                 {order.items.map((item) => (
                   <div className="detail-item-card" key={item.id}>
                     <span
+                      role="img"
+                      aria-label={`Colour ${item.color}`}
                       className="print-swatch large"
                       style={{ background: item.color }}
                     />
@@ -1601,19 +1886,21 @@ function OrderDetail({
                       type="button"
                       className="icon-button"
                       title="Edit item"
+                      aria-label={`Edit item ${item.product_name}`}
                       disabled={busy || !!order.cancelled || !!order.archived}
                       onClick={() => onEditItem(item)}
                     >
-                      <Pencil size={17} />
+                      <Pencil aria-hidden="true" size={17} />
                     </button>
                     <button
                       type="button"
                       className="icon-button"
                       title="Remove item"
+                      aria-label={`Remove item ${item.product_name}`}
                       disabled={busy || !!order.cancelled || !!order.archived}
                       onClick={() => onDeleteItem(item.id)}
                     >
-                      <Trash2 size={17} />
+                      <Trash2 aria-hidden="true" size={17} />
                     </button>
                   </div>
                 ))}
@@ -1621,7 +1908,7 @@ function OrderDetail({
             ) : (
               <Empty
                 small
-                icon={<Package />}
+                icon={<Package aria-hidden="true" />}
                 title="No print items yet"
                 text="Add a product to this order before confirming the sale."
               />
@@ -1640,11 +1927,17 @@ function OrderDetail({
                 <p>Who changed this order and when</p>
               </div>
             </div>
-            <ActivityList entries={activity} />
+            <ActivityList
+              entries={activity}
+              loading={activityLoading}
+              error={activityError}
+              onRetry={onRetryActivity}
+            />
             {activity.length >= 50 && (
               <button
                 type="button"
                 className="outline-button"
+                disabled={activityLoading}
                 onClick={onMoreActivity}
               >
                 Load older activity
@@ -1658,7 +1951,7 @@ function OrderDetail({
             <h2>{order.customer}</h2>
             <p>{order.contact || "No contact details added"}</p>
             <button type="button" className="text-button" onClick={onEdit}>
-              Edit customer <ArrowRight size={15} />
+              Edit customer <ArrowRight aria-hidden="true" size={15} />
             </button>
           </section>
           <section className="panel detail-info-panel">
@@ -1729,7 +2022,7 @@ function OrderDetail({
               disabled={busy}
               onClick={onDelete}
             >
-              <Trash2 size={17} /> Delete draft
+              <Trash2 aria-hidden="true" size={17} /> Delete draft
             </button>
           )}
         </aside>
@@ -1772,7 +2065,7 @@ function Auth({
       <div className="auth-side">
         <div className="auth-brand">
           <span className="brand-icon">
-            <Printer size={22} />
+            <Printer aria-hidden="true" size={22} />
           </span>
           <strong>
             printroom<span className="brand-dot">.</span>
@@ -1822,7 +2115,7 @@ function Auth({
           )}
           <button type="submit" className="auth-submit" disabled={busy}>
             {busy ? "Please wait…" : setup ? "Create studio" : "Sign in"}{" "}
-            <ArrowRight size={17} />
+            <ArrowRight aria-hidden="true" size={17} />
           </button>
         </form>
       </div>
@@ -1882,7 +2175,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 function StatusBadge({ status }: { status: Status }) {
   return (
     <span className={`status status-${status}`}>
-      <i />
+      <i aria-hidden="true" />
       {statusNames[status]}
     </span>
   );
@@ -1911,7 +2204,7 @@ function Empty({
         <Button
           label={action}
           variant="primary"
-          icon={<Plus size={16} />}
+          icon={<Plus aria-hidden="true" size={16} />}
           onClick={onAction}
         />
       )}
@@ -1979,7 +2272,7 @@ function OrderForm({
       <div className="form-actions">
         <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Saving…" : value ? "Save changes" : "Create draft"}{" "}
-          <ArrowRight size={16} />
+          <ArrowRight aria-hidden="true" size={16} />
         </button>
       </div>
     </form>
@@ -2008,6 +2301,7 @@ function FilamentForm({
     ),
     [imageUrl, setImageUrl] = useState(value?.image_url || ""),
     [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const [remaining, setRemaining] = useState(
       value?.remaining_grams ??
         (value?.spool_count ?? 0) * (value?.grams_per_spool ?? 1000),
@@ -2016,13 +2310,14 @@ function FilamentForm({
   async function upload(file?: File) {
     if (!file) return;
     setUploading(true);
+    setUploadError("");
     try {
       const form = new FormData();
       form.append("file", file);
       const result = await api("/upload", "POST", form);
       setImageUrl(result.url);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Upload failed");
+      setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
     }
@@ -2174,6 +2469,11 @@ function FilamentForm({
           {value && <StockHistory filamentId={value.id} api={api} />}
         </>
       )}
+      {uploadError && (
+        <p role="alert" className="error">
+          {uploadError}
+        </p>
+      )}
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="danger-text" onClick={onDelete}>
@@ -2186,7 +2486,7 @@ function FilamentForm({
           disabled={busy || uploading}
         >
           {busy ? "Saving…" : value ? "Save changes" : "Add filament"}{" "}
-          <ArrowRight size={16} />
+          <ArrowRight aria-hidden="true" size={16} />
         </button>
       </div>
     </form>
@@ -2216,6 +2516,7 @@ function ProductForm({
     [imageUrl, setImageUrl] = useState(value?.image_url || ""),
     [ids, setIds] = useState<number[]>(value?.filament_ids || []),
     [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const [details, setDetails] = useState({
     grams_per_piece: value?.grams_per_piece || 0,
     minutes_per_piece: value?.minutes_per_piece || 0,
@@ -2226,13 +2527,14 @@ function ProductForm({
   async function upload(file?: File) {
     if (!file) return;
     setUploading(true);
+    setUploadError("");
     try {
       const form = new FormData();
       form.append("file", file);
       const result = await api("/upload", "POST", form);
       setImageUrl(result.url);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Upload failed");
+      setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
     }
@@ -2287,6 +2589,11 @@ function ProductForm({
         features.cost_reporting) && (
         <ProductionFields value={details} onChange={setDetails} />
       )}
+      {uploadError && (
+        <p role="alert" className="error">
+          {uploadError}
+        </p>
+      )}
       <Field label="Example image">
         <div className="upload-row">
           {imageUrl && <img src={imageUrl} alt="Product preview" />}
@@ -2305,8 +2612,8 @@ function ProductForm({
           <small>PNG, JPEG or WebP · max 5 MB</small>
         </div>
       </Field>
-      <div className="field">
-        <span>Offered filaments</span>
+      <fieldset className="field offered-filaments">
+        <legend>Offered filaments</legend>
         {filaments.length ? (
           <div className="choice-grid">
             {filaments.map((f) => (
@@ -2325,7 +2632,11 @@ function ProductForm({
                     )
                   }
                 />
-                <i style={{ background: f.color }} />
+                <i
+                  role="img"
+                  aria-label={`Colour ${f.color}`}
+                  style={{ background: f.color }}
+                />
                 <span>{f.name}</span>
               </label>
             ))}
@@ -2333,7 +2644,7 @@ function ProductForm({
         ) : (
           <p className="muted">Add filaments first to offer colour options.</p>
         )}
-      </div>
+      </fieldset>
       <div className="form-actions">
         {onDelete && (
           <button type="button" className="danger-text" onClick={onDelete}>
@@ -2346,7 +2657,7 @@ function ProductForm({
           disabled={busy || uploading}
         >
           {busy ? "Saving…" : value ? "Save changes" : "Add product"}{" "}
-          <ArrowRight size={16} />
+          <ArrowRight aria-hidden="true" size={16} />
         </button>
       </div>
     </form>
@@ -2482,7 +2793,7 @@ function ItemForm({
           <div className="form-actions">
             <button type="submit" className="auth-submit" disabled={busy}>
               {busy ? "Saving…" : value ? "Save item" : "Add to order"}{" "}
-              <ArrowRight size={16} />
+              <ArrowRight aria-hidden="true" size={16} />
             </button>
           </div>
         </>
@@ -2689,7 +3000,7 @@ function SettingsPanel({
       <div className="settings-grid">
         <section className="panel settings-card">
           <div className="settings-title">
-            <Settings2 size={21} />
+            <Settings2 aria-hidden="true" size={21} />
             <div>
               <h2>Workspace</h2>
               <p>Shared across everyone in this studio.</p>
@@ -2822,7 +3133,7 @@ function SettingsPanel({
         </section>
         <section className="panel settings-card">
           <div className="settings-title">
-            <Bell size={21} />
+            <Bell aria-hidden="true" size={21} />
             <div>
               <h2>Notifications</h2>
               <p>These choices are just for {data.user?.name}.</p>
@@ -2901,7 +3212,7 @@ function SettingsPanel({
         </section>
         <section className="panel settings-card">
           <div className="settings-title">
-            <Users size={21} />
+            <Users aria-hidden="true" size={21} />
             <div>
               <h2>Account and catalogue</h2>
               <p>Signed in as @{data.user?.username}</p>
@@ -2995,7 +3306,7 @@ function UserForm({
       <div className="form-actions">
         <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Adding…" : "Add user"}
-          <ArrowRight size={16} />
+          <ArrowRight aria-hidden="true" size={16} />
         </button>
       </div>
     </form>
@@ -3065,7 +3376,7 @@ function PasswordForm({
       <div className="form-actions">
         <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Saving…" : "Change password"}
-          <ArrowRight size={16} />
+          <ArrowRight aria-hidden="true" size={16} />
         </button>
       </div>
     </form>
