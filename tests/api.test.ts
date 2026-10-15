@@ -854,6 +854,206 @@ test("duplicate shipment selections record one shipped piece and accurate activi
   );
 });
 
+test("corrupt push subscription rows are caught and removed individually", async () => {
+  const db = new Database(join(dir, "printroom.sqlite"));
+  try {
+    db.query(
+      "INSERT INTO push_subscriptions(endpoint,user_id,subscription_json) VALUES(?,1,?)",
+    ).run("https://fcm.googleapis.com/corrupt", "{broken");
+    expect((await request("/notifications/test", "POST", {})).status).toBe(502);
+    expect(
+      db
+        .query("SELECT * FROM push_subscriptions WHERE endpoint=?")
+        .get("https://fcm.googleapis.com/corrupt"),
+    ).toBeNull();
+    expect((await request("/bootstrap")).status).toBe(200);
+  } finally {
+    db.close();
+  }
+});
+
+test("order and activity cursors reject malformed and unsafe values", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Cursor test" });
+  for (const route of ["/orders", `/orders/${id}/activity`]) {
+    for (const cursor of [
+      "",
+      "0",
+      "-1",
+      "1.5",
+      "NaN",
+      "Infinity",
+      "9007199254740992",
+      "1e2",
+      " 1",
+    ]) {
+      expect(
+        (await request(`${route}?before=${encodeURIComponent(cursor)}`)).status,
+      ).toBe(400);
+    }
+    expect((await request(`${route}?before=1`)).status).toBe(200);
+  }
+  expect(
+    (await request(`/orders/${id}/activity`, "GET", undefined, "")).status,
+  ).toBe(401);
+  expect((await request("/orders/999999/activity")).status).toBe(404);
+});
+
+test("activity pagination is scoped to the order and exclusive", async () => {
+  const first = await api("/orders", "POST", { customer: "Activity first" });
+  const second = await api("/orders", "POST", { customer: "Activity second" });
+  const db = new Database(join(dir, "printroom.sqlite"));
+  try {
+    const insert = db.query(
+      "INSERT INTO activity_events(actor_name,order_id,kind,detail) VALUES('Test',?,'test','page')",
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 55; i++) insert.run(first.id);
+      insert.run(second.id);
+    })();
+  } finally {
+    db.close();
+  }
+  const page = await api(`/orders/${first.id}/activity`);
+  expect(page).toHaveLength(50);
+  const older = await api(
+    `/orders/${first.id}/activity?before=${page.at(-1).id}`,
+  );
+  expect(older.length).toBeGreaterThanOrEqual(5);
+  expect(
+    [...page, ...older].every((event) => event.order_id === first.id),
+  ).toBe(true);
+  expect(older.every((event: any) => event.id < page.at(-1).id)).toBe(true);
+  expect(new Set([...page, ...older].map((event) => event.id)).size).toBe(
+    page.length + older.length,
+  );
+});
+
+test("upload creation and reads require a valid session", async () => {
+  const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+  const upload = async (session: string) => {
+    const form = new FormData();
+    form.set("file", new File([bytes], "test.png", { type: "image/png" }));
+    return fetch(`http://localhost:${port}/api/upload`, {
+      method: "POST",
+      headers: { Cookie: session },
+      body: form,
+    });
+  };
+  expect((await upload("")).status).toBe(401);
+  expect((await upload("session=invalid")).status).toBe(401);
+  const response = await upload(cookie);
+  expect(response.status).toBe(201);
+  const { url } = await response.json();
+  for (const session of ["", "session=invalid"])
+    expect(
+      (
+        await fetch(`http://localhost:${port}${url}`, {
+          headers: { Cookie: session },
+        })
+      ).status,
+    ).toBe(401);
+  const image = await fetch(`http://localhost:${port}${url}`, {
+    headers: { Cookie: cookie },
+  });
+  expect(image.status).toBe(200);
+  expect(new Uint8Array(await image.arrayBuffer())).toEqual(bytes);
+});
+
+test("SSE excludes notification and subscription mutations and failed writes", async () => {
+  expect((await request("/events", "GET", undefined, "")).status).toBe(401);
+  const login = await request(
+    "/login",
+    "POST",
+    { username: "owner", password: "password" },
+    "",
+  );
+  const otherSession = login.headers.get("set-cookie")!.split(";")[0];
+  const abort = new AbortController();
+  const response = await fetch(`http://localhost:${port}/api/events`, {
+    headers: { Cookie: cookie },
+    signal: abort.signal,
+  });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  try {
+    expect(decoder.decode((await reader.read()).value)).toContain(
+      ": connected",
+    );
+    const next = reader.read();
+    expect(
+      (
+        await request("/push-subscriptions", "DELETE", {
+          endpoint: "https://example.com/nonexistent",
+        })
+      ).ok,
+    ).toBe(true);
+    expect((await request("/notifications/test", "POST", {})).status).toBe(400);
+    expect((await request("/logout", "POST", {}, otherSession)).ok).toBe(true);
+    expect((await request("/products", "POST", null)).status).toBe(400);
+    // A successful order write is the barrier: excluded requests must not have
+    // left queued data frames ahead of its single broadcast.
+    await api("/orders", "POST", { customer: "SSE barrier" });
+    const frame = await Promise.race([
+      next,
+      Bun.sleep(2000).then(() => {
+        throw new Error("Missing SSE broadcast");
+      }),
+    ]);
+    expect(decoder.decode(frame.value).match(/data:/g)).toHaveLength(1);
+    const unexpected = reader.read();
+    expect(
+      await Promise.race([
+        unexpected.then(() => "extra"),
+        Bun.sleep(100).then(() => "quiet"),
+      ]),
+    ).toBe("quiet");
+    await reader.cancel();
+  } finally {
+    await reader.cancel();
+    abort.abort();
+  }
+});
+
+test("grouped counters preserve lifecycle filters independently of search and cursor", async () => {
+  const db = new Database(join(dir, "printroom.sqlite"));
+  try {
+    db.query(
+      "INSERT INTO orders(customer,is_draft,status,cancelled,archived) VALUES ('Counter draft',1,'new',0,0),('Counter active',0,'printing',0,0),('Counter shipped',0,'shipped',0,0),('Counter cancelled',0,'new',1,0),('Counter archived',0,'shipped',1,1)",
+    ).run();
+    const page = await api("/orders?filter=active&q=Counter&before=1");
+    expect(page.orders).toEqual([]);
+    expect(page.total).toBe(1);
+    const clauses = {
+      all: "archived=0 AND cancelled=0",
+      draft: "archived=0 AND cancelled=0 AND is_draft=1",
+      active: "archived=0 AND cancelled=0 AND is_draft=0 AND status<>'shipped'",
+      shipped: "archived=0 AND cancelled=0 AND status='shipped'",
+      cancelled: "archived=0 AND cancelled=1",
+      archived: "archived=1",
+    };
+    for (const [filter, where] of Object.entries(clauses)) {
+      const expected = db
+        .query(`SELECT COUNT(*) AS count FROM orders WHERE ${where}`)
+        .get() as { count: number };
+      expect(page.counts[filter]).toBe(expected.count);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test("omitted numeric production details preserve existing product values", async () => {
+  const product = (await bootstrap()).products.find((p: any) => p.id === 1);
+  const { grams_per_piece, minutes_per_piece, ...edit } = product;
+  await api("/products/1", "PUT", { ...edit, name: "Omitted estimates" });
+  const saved = (await bootstrap()).products.find((p: any) => p.id === 1);
+  expect(saved.grams_per_piece).toBe(grams_per_piece);
+  expect(saved.minutes_per_piece).toBe(minutes_per_piece);
+});
+
+// NOTE: this test intentionally runs last in the file. It leaves the per-IP
+// login throttle bucket full, so any login-dependent test after it would get
+// 429 instead of a session. Keep it at the end.
 test("successful login resets the failure throttle and excess attempts are limited", async () => {
   for (let round = 0; round < 2; round++) {
     for (let n = 0; n < 9; n++)
@@ -899,31 +1099,4 @@ test("successful login resets the failure throttle and excess attempts are limit
       )
     ).status,
   ).toBe(429);
-});
-
-test("corrupt push subscription rows are caught and removed individually", async () => {
-  const db = new Database(join(dir, "printroom.sqlite"));
-  try {
-    db.query(
-      "INSERT INTO push_subscriptions(endpoint,user_id,subscription_json) VALUES(?,1,?)",
-    ).run("https://fcm.googleapis.com/corrupt", "{broken");
-    expect((await request("/notifications/test", "POST", {})).status).toBe(502);
-    expect(
-      db
-        .query("SELECT * FROM push_subscriptions WHERE endpoint=?")
-        .get("https://fcm.googleapis.com/corrupt"),
-    ).toBeNull();
-    expect((await request("/bootstrap")).status).toBe(200);
-  } finally {
-    db.close();
-  }
-});
-
-test("omitted numeric production details preserve existing product values", async () => {
-  const product = (await bootstrap()).products.find((p: any) => p.id === 1);
-  const { grams_per_piece, minutes_per_piece, ...edit } = product;
-  await api("/products/1", "PUT", { ...edit, name: "Omitted estimates" });
-  const saved = (await bootstrap()).products.find((p: any) => p.id === 1);
-  expect(saved.grams_per_piece).toBe(grams_per_piece);
-  expect(saved.minutes_per_piece).toBe(minutes_per_piece);
 });

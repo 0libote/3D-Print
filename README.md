@@ -27,6 +27,8 @@ If port 3000 is in use, set `PRINTROOM_PORT`:
 PRINTROOM_PORT=8080 docker compose up -d --build
 ```
 
+`PRINTROOM_PORT` is the host port only (`8080:3000` in this example). The container keeps listening on `PORT=3000`; other Compose services connect to `http://printroom:3000`. The Compose files include optional backup mounts and a companion service waiting for `service_healthy`.
+
 The [container workflow](.github/workflows/container.yml) checks pull requests and pushes to `main` (tests, `bun run format:check`, frontend build and a production container smoke test) and publishes `ghcr.io/0libote/3d-print:latest` for each push to `main` only after checks pass, plus version tags for `v*` Git tags. It builds for AMD64 and ARM64. The published `latest` image has been verified to pull anonymously.
 
 The SQLite database, spool images, product images, and Web Push keys live in the Docker volume `printroom_data`. Keep this volume when updating the image. Use the verified backup/restore commands below before upgrades. Put the app behind an HTTPS reverse proxy for access outside localhost; HTTPS is required for PWA installation and push notifications on devices.
@@ -128,3 +130,22 @@ These are production contributions, not accounting profit: labour, shipping, tax
 New and upgraded workspaces start with optional tools **off**. The basic workflow remains products, filaments, orders, one-piece printing and shipping. In Settings an owner can independently enable production details/history, material planning/automatic consumption, production cost reporting, and payments/shipment tracking/packing slips.
 
 Disabled tools hide their extra screens, panels and fields. Material tracking off means stock weight never blocks printing and no material is automatically consumed. Cost reporting off means new orders and print attempts receive no machine/energy rates. Turning tools off preserves existing estimates, costs, shipments and settings. Re-enable them to see the saved data. Recorded material cost requires material tracking; machine/energy costs can be used independently.
+
+The container build runs independently of tests. Run the optional test stage with
+`docker build --target test .`; CI runs tests separately and reports migration and
+helper line coverage as an artifact alongside explicit backup/restore CLI tests.
+The CLI runs in subprocesses, whose lines are not instrumented by Bun coverage. Typechecking has its own CI job. Container
+smoke checks verify health, bootstrap, frontend HTML and the versioned service worker.
+
+Order list counters use one grouped scan, independent of search and pagination.
+Settings are fetched in one `WHERE key IN (...)` query. Bootstrap batches child
+records and groups product/filament links in memory. Composite indexes support
+order filters, item/shipments by order, job totals and activity by `(order_id,id DESC)`.
+The UI already loads order history from `GET /api/orders/:id/activity`, with 50
+entries per page and an exclusive positive integer `before` cursor; the bounded
+bootstrap activity feed is for the studio overview. Contains searches still scan
+names because a leading `%` cannot use a normal B-tree index.
+
+The service worker cache ID hashes emitted file contents, public assets and the
+worker template. The build fails if the worker or its version placeholder is
+missing, and replaces every placeholder occurrence.

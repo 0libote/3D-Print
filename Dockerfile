@@ -1,9 +1,13 @@
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-slim AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-slim AS source
 WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile --ignore-scripts
 COPY . .
-RUN bun run test && bun run build
+FROM source AS test
+RUN bun test
+
+FROM source AS build
+RUN bun run build
 
 FROM oven/bun:1.4.2-slim
 WORKDIR /app

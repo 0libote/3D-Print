@@ -15,6 +15,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run typecheck
+
   checks:
     permissions:
       contents: read
@@ -44,26 +55,50 @@ jobs:
       - name: Run tests
         run: bun run test
 
+      - name: Show migration and backup coverage
+        run: |
+          bun test --coverage --coverage-reporter=text --coverage-reporter=lcov tests/migrations.test.ts tests/maintenance.test.ts
+          echo 'Migration and deadline helper line coverage: see maintenance-coverage artifact. Backup, restore, owner recovery and upload cleanup are verified by CLI subprocess tests; subprocess lines are not included in Bun coverage.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload maintenance coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: maintenance-coverage
+          path: coverage/lcov.info
+
       - name: Check formatting
         run: bun run format:check
 
       - name: Build frontend
-        run: bun run build
+        run: bun --bun vite build
 
       - name: Smoke test production container
         run: |
           docker build -t printroom-ci .
           docker run -d --name printroom-ci -p 3000:3000 printroom-ci
-          trap 'docker logs printroom-ci; docker rm -f printroom-ci' EXIT
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then docker logs printroom-ci; fi
+            docker rm -f printroom-ci >/dev/null
+            exit "$status"
+          }
+          trap cleanup EXIT
+          ready=false
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://localhost:3000/healthz; then exit 0; fi
+            if curl --fail --silent http://localhost:3000/healthz >/dev/null; then
+              ready=true
+              break
+            fi
             sleep 1
           done
-          exit 1
+          [ "$ready" = true ]
+          curl --fail --silent http://localhost:3000/api/bootstrap | bun -e 'const data = await Bun.stdin.json(); if (data.needsSetup !== true || data.user !== null) process.exit(1)'
+          curl --fail --silent http://localhost:3000/ | bun -e 'if (!(await Bun.stdin.text()).includes("<html")) process.exit(1)'
+          docker exec printroom-ci bun -e 'const sw = await Bun.file("dist/sw.js").text(); if (sw.includes("__BUILD_ID__") || !/printroom-shell-[a-f0-9]{16}/.test(sw)) process.exit(1)'
 
   container:
     if: github.event_name != 'pull_request'
-    needs: checks
+    needs: [typecheck, checks]
     permissions:
       contents: read
       packages: write
