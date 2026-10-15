@@ -700,3 +700,230 @@ test("concurrent filament consumption cannot drive stock negative", async () => 
   order = (await bootstrap()).orders.find((o: any) => o.id === id);
   expect((await act(order.items[0].pieces[1], "stop")).status).toBe(200);
 });
+
+test("concurrent catalogue saves reject the stale overwrite", async () => {
+  const product = (await bootstrap()).products.find((p: any) => p.id === 1);
+  const responses = await Promise.all([
+    request("/products/1", "PUT", { ...product, name: "First save" }),
+    request("/products/1", "PUT", { ...product, name: "Second save" }),
+  ]);
+  expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+  const saved = (await bootstrap()).products.find((p: any) => p.id === 1);
+  expect(saved.name).toBe(responses[0].ok ? "First save" : "Second save");
+  expect(saved.version).toBe(product.version + 1);
+});
+
+test("stale order, item, filament and piece writes leave the saved state intact", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Version guard" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  let order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  await api(`/orders/${id}`, "PUT", { ...order, customer: "Saved customer" });
+  expect((await request(`/orders/${id}`, "PUT", order)).status).toBe(409);
+  expect(
+    (
+      await request(`/orders/${id}/payment`, "PUT", {
+        version: order.version,
+        payment_status: "paid",
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await request(`/orders/${id}/lifecycle`, "POST", {
+        version: order.version,
+        action: "cancel",
+      })
+    ).status,
+  ).toBe(409);
+  const item = order.items[0];
+  await api(`/items/${item.id}`, "PUT", { ...item, quantity: 2 });
+  expect((await request(`/items/${item.id}`, "PUT", item)).status).toBe(409);
+  const filament = (await bootstrap()).filaments.find((f: any) => f.id === 1);
+  await api("/filaments/1/stock", "PUT", { delta: 1 });
+  expect((await request("/filaments/1", "PUT", filament)).status).toBe(409);
+  await api(`/orders/${id}/confirm`, "POST", {});
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  const piece = order.items[0].pieces[0];
+  expect((await act(piece, "start")).status).toBe(200);
+  expect((await act(piece, "complete")).status).toBe(409);
+  const current = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(current.customer).toBe("Saved customer");
+  expect(current.items[0].quantity).toBe(2);
+  expect(current.items[0].pieces[0].status).toBe("printing");
+  expect((await act(current.items[0].pieces[0], "stop")).status).toBe(200);
+});
+
+test("stock deltas enforce both bounds without changing stock or history", async () => {
+  await api("/filaments", "POST", {
+    name: "Bounded stock",
+    color: "#123456",
+    material: "PLA",
+    spool_count: 0,
+  });
+  const filament = (await bootstrap()).filaments.find(
+    (f: any) => f.name === "Bounded stock",
+  );
+  expect(
+    (await request(`/filaments/${filament.id}/stock`, "PUT", { delta: -1 }))
+      .status,
+  ).toBe(409);
+  await api(`/filaments/${filament.id}/stock`, "PUT", { delta: 100000 });
+  expect(
+    (await request(`/filaments/${filament.id}/stock`, "PUT", { delta: 1 }))
+      .status,
+  ).toBe(409);
+  expect(
+    (await bootstrap()).filaments.find((f: any) => f.id === filament.id)
+      .spool_count,
+  ).toBe(100000);
+  expect(await api(`/filaments/${filament.id}/movements`)).toHaveLength(1);
+});
+
+test("validation rejects unsafe images, excessive prices and invalid cursors", async () => {
+  for (const image_url of [
+    "javascript:alert(1)",
+    "data:image/svg+xml,bad",
+    "//example.com/image.png",
+  ])
+    expect(
+      (await request("/products", "POST", { name: "Unsafe image", image_url }))
+        .status,
+    ).toBe(400);
+  expect(
+    (
+      await request("/filaments", "POST", {
+        name: "Unsafe image",
+        material: "PLA",
+        color: "#123456",
+        image_url: "javascript:alert(1)",
+      })
+    ).status,
+  ).toBe(400);
+  for (const price of [-1, 1000001, "Infinity"])
+    expect(
+      (await request("/products", "POST", { name: "Invalid price", price }))
+        .status,
+    ).toBe(400);
+  const { id } = await api("/orders", "POST", { customer: "Cursor test" });
+  for (const before of [
+    "bad",
+    "",
+    "0",
+    "-1",
+    "1.5",
+    "Infinity",
+    "9007199254740992",
+  ])
+    for (const path of ["/orders", "/jobs", `/orders/${id}/activity`])
+      expect((await request(`${path}?before=${before}`)).status).toBe(400);
+  for (const image_url of [
+    "https://example.com/image.png",
+    "/uploads/example.png",
+    "",
+  ])
+    expect(
+      (await request("/products", "POST", { name: "Valid image", image_url }))
+        .status,
+    ).toBe(201);
+});
+
+test("order search treats LIKE metacharacters literally", async () => {
+  const customer = "Literal %_\\ marker";
+  const { id } = await api("/orders", "POST", { customer });
+  await api("/orders", "POST", { customer: "Literal other marker" });
+  const data = await api(`/orders?q=${encodeURIComponent("%_\\")}`);
+  expect(data.total).toBe(1);
+  expect(data.orders[0].id).toBe(id);
+});
+
+test("duplicate shipment selections record one shipped piece and accurate activity", async () => {
+  let order = await freshOrder(1);
+  await act(order.items[0].pieces[0], "start");
+  order = (await bootstrap()).orders.find((o: any) => o.id === order.id);
+  await act(order.items[0].pieces[0], "complete");
+  const pieceId = order.items[0].pieces[0].id;
+  await api(`/orders/${order.id}/shipments`, "POST", {
+    piece_ids: [pieceId, pieceId],
+  });
+  order = (await bootstrap()).orders.find((o: any) => o.id === order.id);
+  expect(order.items[0].shipped_quantity).toBe(1);
+  expect(order.shipments).toHaveLength(1);
+  const history = await api(`/orders/${order.id}/activity`);
+  expect(history.find((e: any) => e.kind === "shipment_created").detail).toBe(
+    "Dispatched 1 pieces.",
+  );
+});
+
+test("successful login resets the failure throttle and excess attempts are limited", async () => {
+  for (let round = 0; round < 2; round++) {
+    for (let n = 0; n < 9; n++)
+      expect(
+        (
+          await request(
+            "/login",
+            "POST",
+            { username: "missing", password: "wrong" },
+            "",
+          )
+        ).status,
+      ).toBe(401);
+    expect(
+      (
+        await request(
+          "/login",
+          "POST",
+          { username: "owner", password: "password" },
+          "",
+        )
+      ).status,
+    ).toBe(200);
+  }
+  for (let n = 0; n < 10; n++)
+    expect(
+      (
+        await request(
+          "/login",
+          "POST",
+          { username: "missing", password: "wrong" },
+          "",
+        )
+      ).status,
+    ).toBe(401);
+  expect(
+    (
+      await request(
+        "/login",
+        "POST",
+        { username: "missing", password: "wrong" },
+        "",
+      )
+    ).status,
+  ).toBe(429);
+});
+
+test("corrupt push subscription rows are caught and removed individually", async () => {
+  const db = new Database(join(dir, "printroom.sqlite"));
+  try {
+    db.query(
+      "INSERT INTO push_subscriptions(endpoint,user_id,subscription_json) VALUES(?,1,?)",
+    ).run("https://fcm.googleapis.com/corrupt", "{broken");
+    expect((await request("/notifications/test", "POST", {})).status).toBe(502);
+    expect(
+      db
+        .query("SELECT * FROM push_subscriptions WHERE endpoint=?")
+        .get("https://fcm.googleapis.com/corrupt"),
+    ).toBeNull();
+    expect((await request("/bootstrap")).status).toBe(200);
+  } finally {
+    db.close();
+  }
+});
+
+test("omitted numeric production details preserve existing product values", async () => {
+  const product = (await bootstrap()).products.find((p: any) => p.id === 1);
+  const { grams_per_piece, minutes_per_piece, ...edit } = product;
+  await api("/products/1", "PUT", { ...edit, name: "Omitted estimates" });
+  const saved = (await bootstrap()).products.find((p: any) => p.id === 1);
+  expect(saved.grams_per_piece).toBe(grams_per_piece);
+  expect(saved.minutes_per_piece).toBe(minutes_per_piece);
+});
