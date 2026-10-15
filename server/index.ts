@@ -1,3 +1,4 @@
+import { dueReminders } from "../shared/deadline-reminders";
 import { featureDefaults } from "../shared/features";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -169,6 +170,14 @@ db.query(
   "INSERT OR IGNORE INTO app_settings (key,value) VALUES ('show_money','true'),('currency','GBP')",
 ).run();
 migrateProduction(db);
+// Re-runnable indexes also upgrade existing databases without rewriting data.
+db.exec(`
+CREATE INDEX IF NOT EXISTS orders_recent_idx ON orders(archived,cancelled,id DESC);
+CREATE INDEX IF NOT EXISTS orders_list_idx ON orders(archived,cancelled,is_draft,status,id DESC);
+CREATE INDEX IF NOT EXISTS order_items_order_id_idx ON order_items(order_id,id);
+CREATE INDEX IF NOT EXISTS shipments_order_id_idx ON shipments(order_id,id DESC);
+CREATE INDEX IF NOT EXISTS jobs_order_status_idx ON print_jobs(order_id_snapshot,status);
+`);
 const workshop = production(db);
 type Row = Record<string, any>;
 const all = (sql: string, ...params: any[]) =>
@@ -234,32 +243,29 @@ const noticeKinds: NoticeKind[] = [
   "deadline_overdue",
 ];
 function settings() {
+  const keys = [
+    ...Object.keys(featureDefaults),
+    "machine_hourly_rate",
+    "electricity_per_kwh",
+    "printer_watts",
+    "show_money",
+    "currency",
+  ];
+  const values = Object.fromEntries(
+    all(
+      `SELECT key,value FROM app_settings WHERE key IN (${keys.map(() => "?").join(",")})`,
+      ...keys,
+    ).map(({ key, value }) => [key, value]),
+  );
   return {
     ...(Object.fromEntries(
-      Object.keys(featureDefaults).map((key) => [
-        key,
-        one("SELECT value FROM app_settings WHERE key=?", key)?.value ===
-          "true",
-      ]),
+      Object.keys(featureDefaults).map((key) => [key, values[key] === "true"]),
     ) as typeof featureDefaults),
-    machine_hourly_rate: Number(
-      one("SELECT value FROM app_settings WHERE key='machine_hourly_rate'")
-        ?.value || 0,
-    ),
-    electricity_per_kwh: Number(
-      one("SELECT value FROM app_settings WHERE key='electricity_per_kwh'")
-        ?.value || 0,
-    ),
-    printer_watts: Number(
-      one("SELECT value FROM app_settings WHERE key='printer_watts'")?.value ||
-        0,
-    ),
-    show_money:
-      one("SELECT value FROM app_settings WHERE key='show_money'")?.value !==
-      "false",
-    currency:
-      one("SELECT value FROM app_settings WHERE key='currency'")?.value ||
-      "GBP",
+    machine_hourly_rate: Number(values.machine_hourly_rate || 0),
+    electricity_per_kwh: Number(values.electricity_per_kwh || 0),
+    printer_watts: Number(values.printer_watts || 0),
+    show_money: values.show_money !== "false",
+    currency: values.currency || "GBP",
   };
 }
 function preferences(userId: number) {
@@ -400,6 +406,12 @@ function id(value: string | undefined) {
   if (!Number.isSafeInteger(n) || n < 1) throw new RequestError("Invalid ID");
   return n;
 }
+function beforeCursor(url: URL) {
+  const value = url.searchParams.get("before");
+  if (value === null) return Number.MAX_SAFE_INTEGER;
+  if (!/^[1-9]\d*$/.test(value)) throw new RequestError("Invalid cursor");
+  return id(value);
+}
 function filamentStock(b: Row) {
   const count = Number(b.spool_count ?? 0),
     grams = Number(b.grams_per_spool ?? 1000);
@@ -412,12 +424,15 @@ function filamentStock(b: Row) {
   return { count, grams };
 }
 function productRows() {
-  const links = all("SELECT * FROM product_filaments");
+  const links = new Map<number, number[]>();
+  for (const link of all("SELECT * FROM product_filaments")) {
+    const ids = links.get(link.product_id) || [];
+    ids.push(link.filament_id);
+    links.set(link.product_id, ids);
+  }
   return all("SELECT * FROM products ORDER BY id DESC").map((p) => ({
     ...p,
-    filament_ids: links
-      .filter((l) => l.product_id === p.id)
-      .map((l) => l.filament_id),
+    filament_ids: links.get(p.id) || [],
   }));
 }
 function orderRows(where = "1=1", params: any[] = [], limit = 1000000) {
@@ -542,28 +557,15 @@ function itemProduct(b: Row) {
   return { productId, product, filamentId, filament };
 }
 function checkDeadlineReminders() {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: process.env.TZ || "Europe/London",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hourCycle: "h23",
-  });
-  const parts = Object.fromEntries(
-    formatter.formatToParts(new Date()).map((part) => [part.type, part.value]),
-  );
-  if (Number(parts.hour) < 9) return;
-  const today = `${parts.year}-${parts.month}-${parts.day}`;
-  const todayDay = Date.parse(today) / 86400000;
   let changed = false;
-  for (const order of all(
+  const orders = all(
     "SELECT id,customer,ship_by FROM orders WHERE is_draft=0 AND cancelled=0 AND archived=0 AND status<>'shipped' AND ship_by<>''",
+  );
+  for (const { order, kind, detail } of dueReminders(
+    orders as { id: number; customer: string; ship_by: string }[],
+    new Date(),
+    process.env.TZ || "Europe/London",
   )) {
-    const days = Date.parse(order.ship_by) / 86400000 - todayDay;
-    if (days > 2) continue;
-    const overdue = days < 0;
-    const kind = overdue ? "deadline_overdue" : "deadline_soon";
     const result = run(
       "INSERT OR IGNORE INTO deadline_reminders (order_id,kind,ship_by) VALUES (?,?,?)",
       order.id,
@@ -571,13 +573,12 @@ function checkDeadlineReminders() {
       order.ship_by,
     );
     if (!result.changes) continue;
-    const detail = overdue
-      ? `Order #${order.id} for ${order.customer} is overdue (ship by ${order.ship_by}).`
-      : `Order #${order.id} for ${order.customer} is due to ship ${days === 0 ? "today" : `in ${days} ${days === 1 ? "day" : "days"}`} (${order.ship_by}).`;
     activity(null, order.id, kind, detail);
     notify(
       kind,
-      overdue ? "Shipping deadline overdue" : "Shipping deadline approaching",
+      kind === "deadline_overdue"
+        ? "Shipping deadline overdue"
+        : "Shipping deadline approaching",
       detail,
       order.id,
     );
@@ -719,7 +720,7 @@ async function handleRequest(
           : [],
         jobs: user
           ? all(
-              "SELECT j.*,u.name AS operator_name,j.product_name_snapshot AS product_name,j.ordinal_snapshot AS ordinal,j.order_id_snapshot AS order_id FROM print_jobs j LEFT JOIN users u ON u.id=j.operator_id LEFT JOIN order_pieces p ON p.id=j.piece_id LEFT JOIN order_items i ON i.id=p.item_id ORDER BY j.id DESC LIMIT 100",
+              "SELECT j.*,u.name AS operator_name,j.product_name_snapshot AS product_name,j.ordinal_snapshot AS ordinal,j.order_id_snapshot AS order_id FROM print_jobs j LEFT JOIN users u ON u.id=j.operator_id ORDER BY j.id DESC LIMIT 100",
             )
           : [],
         activity: user
@@ -853,25 +854,38 @@ async function handleRequest(
         url.searchParams.get("filter") || "all",
         optional(url.searchParams.get("q"), 200),
       );
-      const before =
-        Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
+      const before = beforeCursor(url);
       const rows = orderRows(`(${where}) AND id<?`, [...params, before], 50);
       const total = one(
         `SELECT COUNT(*) AS count FROM orders WHERE ${where}`,
         ...params,
       )!.count;
-      const counts = Object.fromEntries(
-        ["all", "draft", "active", "shipped", "cancelled", "archived"].map(
-          (filter) => {
-            const clause = orderFilterQuery(filter, "");
-            return [
-              filter,
-              one(`SELECT COUNT(*) AS count FROM orders WHERE ${clause.where}`)!
-                .count,
-            ];
-          },
-        ),
-      );
+      // Group once; counters are global, independent of search and cursor.
+      const counts: Record<string, number> = {
+        all: 0,
+        draft: 0,
+        active: 0,
+        shipped: 0,
+        cancelled: 0,
+        archived: 0,
+      };
+      for (const group of all(
+        "SELECT archived,cancelled,is_draft,status,COUNT(*) AS count FROM orders GROUP BY archived,cancelled,is_draft,status",
+      )) {
+        if (group.archived) {
+          counts.archived += group.count;
+          continue;
+        }
+        if (group.cancelled) {
+          counts.cancelled += group.count;
+          continue;
+        }
+        counts.all += group.count;
+        if (group.is_draft) counts.draft += group.count;
+        if (!group.is_draft && group.status !== "shipped")
+          counts.active += group.count;
+        if (group.status === "shipped") counts.shipped += group.count;
+      }
       return json({
         orders: rows,
         total,
@@ -884,8 +898,7 @@ async function handleRequest(
       const orderId = id(history[1]);
       if (!one("SELECT id FROM orders WHERE id=?", orderId))
         return bad("Order not found", 404);
-      const before =
-        Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
+      const before = beforeCursor(url);
       return json(
         all(
           "SELECT * FROM activity_events WHERE order_id=? AND id<? ORDER BY id DESC LIMIT 50",

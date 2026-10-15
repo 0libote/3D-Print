@@ -3,10 +3,13 @@ services:
     build: .
     environment:
       TZ: ${TZ:-Europe/London}
+    # PRINTROOM_PORT changes only the host port; Bun listens on container port 3000.
     ports:
       - "${PRINTROOM_PORT:-3000}:3000"
     volumes:
       - printroom_data:/app/data
+      # Optional backup destination (must be writable by the bun user):
+      # - ./backups:/backups
     restart: unless-stopped
     # The image already defines a HEALTHCHECK (30s interval, 5s timeout,
     # 3 retries, 30s start period). Uncomment to override it here:
@@ -26,5 +29,12 @@ services:
     # docker compose down
     # docker compose run --rm -v ./backups:/backups printroom bun scripts/maintenance.ts backup /backups/printroom-2026-10-13
     # docker compose up -d
+  # Example companion service that waits for Printroom readiness:
+  # companion:
+  #   image: your-companion-image
+  #   depends_on:
+  #     printroom:
+  #       condition: service_healthy
+
 volumes:
   printroom_data:

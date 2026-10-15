@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bun --bun vite --host 0.0.0.0",
     "server": "bun server/index.ts",
-    "build": "bun --bun tsc --noEmit && bun --bun vite build",
+    "build": "bun run typecheck && bun --bun vite build",
     "test": "bun test",
     "start": "bun server/index.ts",
     "backup": "bun run scripts/maintenance.ts backup",
@@ -13,7 +13,8 @@
     "recover-owner": "bun run scripts/maintenance.ts recover-owner",
     "cleanup-uploads": "bun run scripts/maintenance.ts cleanup-uploads",
     "format": "prettier --write src server shared tests scripts public/sw.js vite.config.ts tsconfig.json package.json",
-    "format:check": "prettier --check src server shared tests scripts public/sw.js vite.config.ts tsconfig.json package.json"
+    "format:check": "prettier --check src server shared tests scripts public/sw.js vite.config.ts tsconfig.json package.json",
+    "typecheck": "bun --bun tsc --noEmit"
   },
   "dependencies": {
     "@astryxdesign/core": "^0.6.7",

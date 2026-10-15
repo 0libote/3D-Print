@@ -2,6 +2,7 @@ const CACHE = "printroom-shell-__BUILD_ID__";
 const SHELL = [
   "/",
   "/offline.html",
+  "/manifest.webmanifest",
   "/icon-192.png",
   "/icon-512.png",
   "/fonts/dm-sans.woff2",

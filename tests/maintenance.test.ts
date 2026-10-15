@@ -1,3 +1,4 @@
+import { dueReminders } from "../shared/deadline-reminders";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
@@ -152,7 +153,39 @@ test("cleanup-uploads dry-run only lists while --apply removes unreferenced old 
   }
 });
 
-// TODO: extract the pure deadline kind/detail computation out of
-// checkDeadlineReminders (server/index.ts) into shared/ so it can be unit
-// tested here without a database. Kept skipped until that extraction lands.
-test.skip("dueReminders pure helper", () => {});
+test("dueReminders computes deadlines after 9am in the studio timezone", () => {
+  const orders = [
+    "2026-03-28",
+    "2026-03-29",
+    "2026-03-30",
+    "2026-03-31",
+    "2026-04-01",
+    "",
+    "invalid",
+  ].map((ship_by, index) => ({ id: index + 1, customer: "Studio", ship_by }));
+  // London has entered DST: 08:00 UTC is 09:00 local.
+  expect(
+    dueReminders(orders, new Date("2026-03-29T07:59:00Z"), "Europe/London"),
+  ).toEqual([]);
+  const due = dueReminders(
+    orders,
+    new Date("2026-03-29T08:00:00Z"),
+    "Europe/London",
+  );
+  expect(due.map((reminder) => reminder.kind)).toEqual([
+    "deadline_overdue",
+    "deadline_soon",
+    "deadline_soon",
+    "deadline_soon",
+  ]);
+  expect(due.map((reminder) => reminder.detail)).toEqual([
+    "Order #1 for Studio is overdue (ship by 2026-03-28).",
+    "Order #2 for Studio is due to ship today (2026-03-29).",
+    "Order #3 for Studio is due to ship in 1 day (2026-03-30).",
+    "Order #4 for Studio is due to ship in 2 days (2026-03-31).",
+  ]);
+  expect(dueReminders(orders, new Date("2026-03-29T08:00:00Z"), "UTC")).toEqual(
+    [],
+  );
+  expect(dueReminders([], new Date("2026-03-29T12:00:00Z"), "UTC")).toEqual([]);
+});
