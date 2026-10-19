@@ -61,7 +61,7 @@ jobs:
           echo 'Migration and deadline helper line coverage: see maintenance-coverage artifact. Backup, restore, owner recovery and upload cleanup are verified by CLI subprocess tests; subprocess lines are not included in Bun coverage.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload maintenance coverage
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maintenance-coverage
           path: coverage/lcov.info
