@@ -3,6 +3,7 @@ import { useFeatures } from "./Features";
 import { useEffect, useState } from "react";
 import { Printer, Truck } from "lucide-react";
 import type { PieceEntry } from "../shared/models";
+import { Deadline } from "./Deadline";
 
 export type PieceAction =
   "start" | "complete" | "fail" | "stop" | "ship" | "reprint";
@@ -153,7 +154,7 @@ export function PieceQueue({
                 #{String(order.id).padStart(4, "0")} · {order.customer}
                 {order.ship_by && (
                   <small className="piece-deadline">
-                    Ship by {order.ship_by}
+                    <Deadline order={order} />
                   </small>
                 )}
               </button>

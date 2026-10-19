@@ -60,11 +60,15 @@ export function Modal({
           'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex="0"]',
         ),
       ].filter((e) => e.getClientRects().length);
-    (
-      focusable().find(
-        (e) => e.tagName === "INPUT" || e.tagName === "SELECT",
-      ) || dialog
-    ).focus({ preventScroll: true });
+    // Let phone users read the sheet before opening the software keyboard.
+    const initialFocus = window.matchMedia(
+      "(max-width: 780px), (max-width: 980px) and (max-height: 500px)",
+    ).matches
+      ? dialog
+      : focusable().find(
+          (e) => e.tagName === "INPUT" || e.tagName === "SELECT",
+        ) || dialog;
+    initialFocus.focus({ preventScroll: true });
     const handler = (e: KeyboardEvent) => {
       if (dialog.inert) return;
       if (e.key === "Escape" && !pending.current) {

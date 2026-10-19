@@ -28,6 +28,7 @@ import {
   Settings2,
   Bell,
   Minus,
+  Ellipsis,
 } from "lucide-react";
 import "./styles.css";
 import "./workspace.css";
@@ -48,9 +49,10 @@ import {
   type PieceEntry,
 } from "../shared/models";
 import { PieceQueue, type PieceAction } from "./PieceQueue";
-import { OrdersBrowser } from "./OrdersBrowser";
+import { OrdersBrowser, type OrderFilter } from "./OrdersBrowser";
 import { useDecision } from "./useDecision";
 import { Modal } from "./Modal";
+import { Deadline, shipDate } from "./Deadline";
 import {
   StudioOverview,
   CostSummary,
@@ -150,42 +152,6 @@ const date = (s: string) =>
     month: "short",
     year: "numeric",
   });
-const shipDate = (s: string) =>
-  new Date(`${s}T12:00:00`).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-const todayKey = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-};
-function Deadline({ order }: { order: Order }) {
-  if (!order.ship_by)
-    return <span className="deadline-empty">No deadline</span>;
-  const pending =
-    order.status !== "shipped" && !order.cancelled && !order.archived;
-  const overdue = pending && order.ship_by < todayKey();
-  const today = pending && order.ship_by === todayKey();
-  const days = (Date.parse(order.ship_by) - Date.parse(todayKey())) / 86400000;
-  const soon = pending && days > 0 && days <= 2;
-  return (
-    <span
-      className={`deadline${overdue ? " overdue" : today ? " today" : soon ? " upcoming" : ""}`}
-    >
-      {overdue
-        ? "Overdue · "
-        : today
-          ? "Due today · "
-          : soon
-            ? days === 1
-              ? "Due tomorrow · "
-              : "Due in 2 days · "
-            : "Ship by "}
-      {shipDate(order.ship_by)}
-    </span>
-  );
-}
 const styles = stylex.create({
   brand: { letterSpacing: "-0.045em", fontWeight: 800 },
 });
@@ -238,6 +204,11 @@ function App() {
   const [data, setData] = useState<Data | null>(null);
   const [page, setPage] = useState<Page>("overview");
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [orderFilters, setOrderFilters] = useState({
+    filter: "all" as OrderFilter,
+    query: "",
+  });
   const [selectedOrder, setSelectedOrder] = useState<number | null>(null);
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
@@ -623,6 +594,7 @@ function App() {
     icon: React.ReactNode;
     count?: number;
     alert?: boolean;
+    mobileLabel?: string;
   }[] = [
     {
       id: "overview",
@@ -632,6 +604,7 @@ function App() {
     {
       id: "queue",
       label: activeEntry ? "Printing now" : "Queue",
+      mobileLabel: "Queue",
       icon: <ListTodo aria-hidden="true" size={20} />,
       count: queue.length,
       alert: !!activeEntry,
@@ -706,17 +679,23 @@ function App() {
                 type="button"
                 key={tab.id}
                 data-page={tab.id}
-                aria-label={tab.label}
                 aria-current={page === tab.id ? "page" : undefined}
                 title={tab.label}
-                className={page === tab.id ? "nav active" : "nav"}
+                className={`nav${page === tab.id ? " active" : ""}`}
                 onClick={() => {
                   setPage(tab.id);
                   setSelectedOrder(null);
                 }}
               >
                 {tab.icon}
-                <span>{tab.label}</span>
+                <span
+                  className={tab.mobileLabel ? "desktop-nav-label" : undefined}
+                >
+                  {tab.label}
+                </span>
+                {tab.mobileLabel && (
+                  <span className="mobile-only">{tab.mobileLabel}</span>
+                )}
                 {tab.id === "queue" && tab.alert && (
                   <i
                     className="nav-printing-dot"
@@ -724,9 +703,36 @@ function App() {
                     title="A print is running"
                   />
                 )}
-                {!!tab.count && <b>{tab.count}</b>}
+                {!!tab.count && (
+                  <b aria-hidden="true">{tab.count > 99 ? "99+" : tab.count}</b>
+                )}
               </button>
             ))}
+            <button
+              type="button"
+              className={`nav mobile-only${page === "products" || page === "filaments" ? " active" : ""}`}
+              aria-current={
+                page === "products" || page === "filaments" ? "page" : undefined
+              }
+              onClick={() => {
+                setPage(page === "filaments" ? "filaments" : "products");
+                setSelectedOrder(null);
+              }}
+            >
+              <Boxes aria-hidden="true" size={20} />
+              <span>Catalogue</span>
+            </button>
+            <button
+              type="button"
+              className={`nav mobile-only${["settings", "team", "jobs"].includes(page) ? " active" : ""}`}
+              aria-label="More"
+              aria-haspopup="dialog"
+              aria-expanded={mobileMenu}
+              onClick={() => setMobileMenu(true)}
+            >
+              <Ellipsis aria-hidden="true" size={20} />
+              <span>More</span>
+            </button>
           </nav>
           <div className="sidebar-bottom">
             <div className="profile">
@@ -751,6 +757,10 @@ function App() {
         </aside>
         <main className="main">
           <header className="topbar">
+            <span className="mobile-only mobile-brand">
+              <Printer aria-hidden="true" size={19} />
+              printroom<span className="brand-dot">.</span>
+            </span>
             <div className="top-right">
               <span
                 role="status"
@@ -783,6 +793,28 @@ function App() {
             </div>
           </header>
           <div className="content workspace-content">
+            {(page === "products" || page === "filaments") && (
+              <nav
+                className="mobile-only catalogue-tabs"
+                aria-label="Catalogue"
+              >
+                {(["products", "filaments"] as const).map((tab) => (
+                  <button
+                    type="button"
+                    key={tab}
+                    aria-current={page === tab ? "page" : undefined}
+                    onClick={() => setPage(tab)}
+                  >
+                    {tab === "products" ? (
+                      <Boxes aria-hidden="true" size={18} />
+                    ) : (
+                      <Layers3 aria-hidden="true" size={18} />
+                    )}
+                    {tab === "products" ? "Products" : "Filaments"}
+                  </button>
+                ))}
+              </nav>
+            )}
             {page === "overview" && (
               <>
                 <div className="page-heading">
@@ -1067,6 +1099,8 @@ function App() {
                   api={api}
                   revision={data}
                   showMoney={data.settings.show_money}
+                  filters={orderFilters}
+                  onFiltersChange={setOrderFilters}
                   onOpen={setSelectedOrder}
                   onCreate={() => setDialog({ type: "order" })}
                 />
@@ -1449,6 +1483,60 @@ function App() {
             )}
           </div>
         </main>
+        {mobileMenu && (
+          <Modal busy={false} onClose={() => setMobileMenu(false)}>
+            <div className="modal-top">
+              <div>
+                <h2>Workspace</h2>
+                <p className="mobile-menu-account">
+                  {data.user.name} · @{data.user.username}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close menu"
+                onClick={() => setMobileMenu(false)}
+              >
+                <X aria-hidden="true" size={21} />
+              </button>
+            </div>
+            <nav
+              className="mobile-menu-links"
+              aria-label="More workspace pages"
+            >
+              {tabs
+                .filter((tab) => ["settings", "team", "jobs"].includes(tab.id))
+                .map((tab) => (
+                  <button
+                    type="button"
+                    key={tab.id}
+                    aria-current={page === tab.id ? "page" : undefined}
+                    onClick={() => {
+                      setPage(tab.id);
+                      setSelectedOrder(null);
+                      setMobileMenu(false);
+                    }}
+                  >
+                    {tab.icon}
+                    <span>{tab.label}</span>
+                    <ArrowRight aria-hidden="true" size={17} />
+                  </button>
+                ))}
+              <button
+                type="button"
+                disabled={Object.keys(pending).length > 0}
+                onClick={() => {
+                  setMobileMenu(false);
+                  void signOut();
+                }}
+              >
+                <LogOut aria-hidden="true" size={20} />
+                <span>Sign out</span>
+              </button>
+            </nav>
+          </Modal>
+        )}
         {dialog && (
           <Modal busy={busy} onClose={() => setDialog(null)}>
             <div className="modal-top">

@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import type { Order } from "../shared/models";
 import { countPieces } from "../shared/models";
 import { exportOrders } from "./Studio";
+import { Deadline } from "./Deadline";
+import { Plus, Search, X } from "lucide-react";
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -20,7 +22,9 @@ const labels = {
   cancelled: "Cancelled",
   archived: "Archived",
 };
-type Filter = keyof typeof labels;
+export type OrderFilter = keyof typeof labels;
+type Filter = OrderFilter;
+type Filters = { filter: Filter; query: string };
 type Result = {
   orders: Order[];
   total: number;
@@ -37,18 +41,21 @@ export function OrdersBrowser({
   api,
   revision,
   showMoney,
+  filters,
+  onFiltersChange,
   onOpen,
   onCreate,
 }: {
   api: Api;
   revision: unknown;
   showMoney: boolean;
+  filters: Filters;
+  onFiltersChange: (filters: Filters) => void;
   onOpen: (id: number) => void;
   onCreate: () => void;
 }) {
-  const [filter, setFilter] = useState<Filter>("all"),
-    [query, setQuery] = useState(""),
-    [result, setResult] = useState<Result | null>(null),
+  const { filter, query } = filters;
+  const [result, setResult] = useState<Result | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
 
@@ -131,7 +138,7 @@ export function OrdersBrowser({
           <p>Prepare drafts, confirm sales and track every piece.</p>
         </div>
         <button className="auth-submit" onClick={onCreate}>
-          New draft
+          <Plus aria-hidden="true" size={17} /> New draft
         </button>
       </div>
       <div className="orders-toolbar">
@@ -141,7 +148,14 @@ export function OrdersBrowser({
               key={key}
               className={key === filter ? "selected" : ""}
               aria-pressed={key === filter}
-              onClick={() => setFilter(key)}
+              onClick={(event) => {
+                onFiltersChange({ ...filters, filter: key });
+                event.currentTarget.scrollIntoView({
+                  block: "nearest",
+                  inline: "nearest",
+                  behavior: "smooth",
+                });
+              }}
             >
               {labels[key]}
               <span aria-live="polite">{result?.counts[key] ?? "…"}</span>
@@ -149,16 +163,30 @@ export function OrdersBrowser({
           ))}
         </div>
         <div className="search">
+          <Search aria-hidden="true" size={18} />
           <input
+            type="search"
             aria-label="Search orders"
             maxLength={200}
             placeholder="Search orders, products or customers…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) =>
+              onFiltersChange({ ...filters, query: e.target.value })
+            }
           />
+          {query && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Clear order search"
+              onClick={() => onFiltersChange({ ...filters, query: "" })}
+            >
+              <X aria-hidden="true" size={17} />
+            </button>
+          )}
         </div>
       </div>
-      <p className="muted">
+      <p className="muted orders-results">
         {result?.total ?? 0} matching orders{" "}
         <button
           className="text-button"
@@ -178,7 +206,11 @@ export function OrdersBrowser({
           {error}
         </p>
       )}
-      <section className="panel table-panel orders-list">
+      <section
+        className="panel table-panel orders-list"
+        aria-label="Orders"
+        aria-busy={busy}
+      >
         <div className="table-wrap">
           <table>
             <thead>
@@ -194,22 +226,25 @@ export function OrdersBrowser({
             <tbody>
               {result?.orders.map((order) => (
                 <tr key={order.id}>
-                  <td data-label="Order">
+                  <td data-label="Order" className="order-cell-id">
                     <button
-                      className="text-button"
+                      className="text-button order-open"
+                      aria-label={`Open order #${String(order.id).padStart(4, "0")} for ${order.customer}`}
                       onClick={() => onOpen(order.id)}
                     >
                       #{String(order.id).padStart(4, "0")}
                     </button>
                   </td>
-                  <td data-label="Customer">
+                  <td data-label="Customer" className="order-cell-customer">
                     <strong>{order.customer}</strong>
                   </td>
-                  <td data-label="Pieces">
+                  <td data-label="Pieces" className="order-cell-pieces">
                     {order.items.reduce((sum, i) => sum + i.quantity, 0)}
                   </td>
-                  <td data-label="Ship by">{order.ship_by || "No deadline"}</td>
-                  <td data-label="Status">
+                  <td data-label="Ship by" className="order-cell-deadline">
+                    <Deadline order={order} />
+                  </td>
+                  <td data-label="Status" className="order-cell-status">
                     {(() => {
                       const counts = countPieces(order);
                       const hasActive = order.items.some((item) =>
@@ -264,7 +299,7 @@ export function OrdersBrowser({
                     })()}
                   </td>
                   {showMoney && (
-                    <td data-label="Total">
+                    <td data-label="Total" className="order-cell-total">
                       {new Intl.NumberFormat("en-GB", {
                         style: "currency",
                         currency: order.currency,
