@@ -54,7 +54,7 @@
 .setting-toggle input {
   width: 20px;
   height: 20px;
-  accent-color: #b07857;
+  accent-color: var(--accent);
   flex: none;
 }
 .settings-card .field {
@@ -724,8 +724,8 @@ html {
     min-height: 48px;
   }
   .auth-submit {
-    background: var(--text);
-    color: var(--surface);
+    background: var(--accent);
+    color: var(--on-accent);
   }
   .queue-printer {
     gap: 8px;

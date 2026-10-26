@@ -133,7 +133,6 @@ export function OrdersBrowser({
     <>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">DRAFT TO DELIVERY</span>
           <h1>Orders</h1>
           <p>Prepare drafts, confirm sales and track every piece.</p>
         </div>
@@ -215,12 +214,12 @@ export function OrdersBrowser({
           <table>
             <thead>
               <tr>
-                <th>ORDER</th>
-                <th>CUSTOMER</th>
-                <th>PIECES</th>
-                <th>SHIP BY</th>
-                <th>STATUS</th>
-                {showMoney && <th>TOTAL</th>}
+                <th>Order</th>
+                <th>Customer</th>
+                <th>Pieces</th>
+                <th>Ship by</th>
+                <th>Status</th>
+                {showMoney && <th>Total</th>}
               </tr>
             </thead>
             <tbody>

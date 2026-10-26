@@ -3,7 +3,6 @@ import { FeaturesContext, useFeatures } from "./Features";
 import { featureDefaults, type Features } from "../shared/features";
 import React, { useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { Button } from "@astryxdesign/core/Button";
 import * as stylex from "@stylexjs/stylex";
 import {
   Boxes,
@@ -62,14 +61,6 @@ import {
   StockHistory,
   AccountPassword,
 } from "./Studio";
-if (import.meta.env.DEV) {
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = "/virtual:stylex.css";
-  document.head.appendChild(link);
-  const runtime = "virtual:stylex:runtime";
-  void import(/* @vite-ignore */ runtime);
-}
 
 type NoticePreferences = {
   draft_created: number;
@@ -199,6 +190,29 @@ async function api(
   if (!res.ok)
     throw new Error(result?.error || `Request failed (${res.status})`);
   return result;
+}
+function PrimaryButton({
+  label,
+  icon,
+  onClick,
+  isDisabled = false,
+}: {
+  label: string;
+  icon?: React.ReactNode;
+  onClick?: () => void;
+  isDisabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className="auth-submit"
+      disabled={isDisabled}
+      onClick={onClick}
+    >
+      {icon}
+      {label}
+    </button>
+  );
 }
 function App() {
   const [data, setData] = useState<Data | null>(null);
@@ -441,7 +455,7 @@ function App() {
     localStorage.setItem("printroom-theme", theme);
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme === "dark" ? "#151719" : "#f7f7f5");
+      ?.setAttribute("content", theme === "dark" ? "#141e2b" : "#f1f4f8");
   }, [theme]);
   async function action(
     work: () => Promise<unknown>,
@@ -588,6 +602,20 @@ function App() {
       step === "start" ? ["printer"] : [],
     );
   };
+  const visibleProducts = data.products.filter(
+    (p) =>
+      !!p.archived === showArchivedCatalogue &&
+      `${p.name} ${p.description} ${p.revision}`
+        .toLowerCase()
+        .includes(catalogueSearch.toLowerCase()),
+  );
+  const visibleFilaments = data.filaments.filter(
+    (f) =>
+      !!f.archived === showArchivedCatalogue &&
+      `${f.name} ${f.brand} ${f.material}`
+        .toLowerCase()
+        .includes(catalogueSearch.toLowerCase()),
+  );
   const tabs: {
     id: Page;
     label: string;
@@ -603,7 +631,7 @@ function App() {
     },
     {
       id: "queue",
-      label: activeEntry ? "Printing now" : "Queue",
+      label: "Print queue",
       mobileLabel: "Queue",
       icon: <ListTodo aria-hidden="true" size={20} />,
       count: queue.length,
@@ -672,7 +700,7 @@ function App() {
               printroom<span className="brand-dot">.</span>
             </span>
           </div>
-          <div className="workspace-label">WORKSPACE</div>
+          <div className="workspace-label">Studio workspace</div>
           <nav aria-label="Workspace">
             {tabs.map((tab) => (
               <button
@@ -757,6 +785,17 @@ function App() {
         </aside>
         <main className="main">
           <header className="topbar">
+            <div className="workspace-context">
+              <span>Studio</span>
+              <span aria-hidden="true">/</span>
+              <strong>{tabs.find((tab) => tab.id === page)?.label}</strong>
+              {chosen && (
+                <>
+                  <span aria-hidden="true">/</span>
+                  <span>#{String(chosen.id).padStart(4, "0")}</span>
+                </>
+              )}
+            </div>
             <span className="mobile-only mobile-brand">
               <Printer aria-hidden="true" size={19} />
               printroom<span className="brand-dot">.</span>
@@ -792,7 +831,7 @@ function App() {
               </button>
             </div>
           </header>
-          <div className="content workspace-content">
+          <div className={`content workspace-content page-${page}`}>
             {(page === "products" || page === "filaments") && (
               <nav
                 className="mobile-only catalogue-tabs"
@@ -819,19 +858,21 @@ function App() {
               <>
                 <div className="page-heading">
                   <div>
-                    <h1>Overview</h1>
+                    <h1>Studio overview</h1>
+                    <p>Your next prints, orders and materials in one place.</p>
                   </div>
-                  <Button
+                  <PrimaryButton
                     label="New draft"
-                    variant="primary"
                     icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "order" })}
                   />
                 </div>
                 <div className="stat-grid">
                   <Stat
-                    label={activeEntry ? "Now printing" : "Printer"}
-                    value={activeEntry ? 1 : 0}
+                    icon={<Printer size={20} aria-hidden="true" />}
+                    onClick={() => setPage("queue")}
+                    label={activeEntry ? "Now printing" : "Printer idle"}
+                    value={activeEntry ? "Printing" : "Ready"}
                     sub={
                       activeEntry
                         ? `${activeEntry.item.product_name} · order #${String(activeEntry.order.id).padStart(4, "0")}`
@@ -840,120 +881,136 @@ function App() {
                     alert={!!activeEntry}
                   />
                   <Stat
+                    icon={<ListTodo size={20} aria-hidden="true" />}
+                    onClick={() => {
+                      setQueueFilter("queued");
+                      setPage("queue");
+                    }}
                     label="Queued pieces"
                     value={queuedOnly.length}
                     sub="Waiting to start"
                   />
                   <Stat
+                    icon={<Package size={20} aria-hidden="true" />}
+                    onClick={() => setPage("queue")}
                     label="Ready to ship"
                     value={ready.length}
                     sub="Printed · not yet shipped"
                   />
                   <Stat
+                    icon={<ClipboardList size={20} aria-hidden="true" />}
+                    onClick={() => {
+                      setOrderFilters({ filter: "draft", query: "" });
+                      setPage("orders");
+                    }}
                     label="Draft orders"
                     value={data.orders.filter((o) => o.is_draft).length}
                     sub="Not yet in the queue"
                   />
                 </div>
                 <NowPrintingBanner entry={activeEntry} onOpen={openOrder} />
-                {data.settings.material_tracking && (
-                  <StudioOverview
-                    orders={data.orders}
-                    filaments={data.filaments.filter((f) => !f.archived)}
-                    showMoney={
-                      data.settings.show_money && data.settings.cost_reporting
-                    }
-                    currency={data.settings.currency}
-                  />
-                )}
-                <section className="panel feature-queue">
-                  <div className="panel-head">
-                    <div>
-                      <h2>Print queue</h2>
-                    </div>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => setPage("queue")}
-                    >
-                      Full queue <ArrowRight aria-hidden="true" size={16} />
-                    </button>
-                  </div>
-                  <PieceQueue
-                    entries={queue.slice(0, 6)}
-                    activePieceId={activePieceId}
-                    busy={false}
-                    pending={pending}
-                    onAction={pieceAction}
-                    onOpen={openOrder}
-                    emptyText="Confirm a draft sale to add its prints to this queue."
-                  />
-                </section>
-                <section className="panel recent-panel">
-                  <div className="panel-head">
-                    <div>
-                      <h2>Recent orders</h2>
-                    </div>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => setPage("orders")}
-                    >
-                      All orders <ArrowRight aria-hidden="true" size={16} />
-                    </button>
-                  </div>
-                  <div className="recent-list">
-                    {data.orders.slice(0, 5).map((order) => (
+                <div className="studio-board">
+                  <section className="panel feature-queue">
+                    <div className="panel-head">
+                      <div>
+                        <h2>Print queue</h2>
+                      </div>
                       <button
                         type="button"
-                        key={order.id}
-                        onClick={() => openOrder(order.id)}
+                        className="text-button"
+                        onClick={() => setPage("queue")}
                       >
-                        <span className="queue-icon">
-                          <Package aria-hidden="true" size={19} />
-                        </span>
-                        <span>
-                          <strong>
-                            #{String(order.id).padStart(4, "0")} ·{" "}
-                            {order.customer}
-                          </strong>
-                          <small>
-                            {(() => {
-                              const counts = countPieces(order);
-                              if (order.is_draft)
-                                return `${order.items.length} ${order.items.length === 1 ? "item" : "items"} · draft · not in queue`;
-                              if (!counts.total)
-                                return `No pieces · ${date(order.created_at)}`;
-                              if (activeOrderIds.has(order.id))
-                                return `${counts.queued} queued · 1 now printing · ${counts.printed} ready · ${counts.shipped} shipped`;
-                              return `${counts.queued + counts.printing} to print · ${counts.printed} ready · ${counts.shipped} shipped`;
-                            })()}
-                          </small>
-                        </span>
-                        <OrderStatusBadge
-                          order={order}
-                          isActive={activeOrderIds.has(order.id)}
-                        />
+                        Full queue <ArrowRight aria-hidden="true" size={16} />
                       </button>
-                    ))}
-                    {!data.orders.length && (
-                      <Empty
-                        small
-                        icon={<ClipboardList aria-hidden="true" />}
-                        title="No orders yet"
-                        text="Create a draft to get started."
+                    </div>
+                    <PieceQueue
+                      entries={queue.slice(0, 6)}
+                      activePieceId={activePieceId}
+                      busy={false}
+                      pending={pending}
+                      onAction={pieceAction}
+                      onOpen={openOrder}
+                      emptyText="Confirm a draft sale to add its prints to this queue."
+                    />
+                  </section>
+                  <aside className="studio-context">
+                    <section className="panel recent-panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>Recent orders</h2>
+                        </div>
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => setPage("orders")}
+                        >
+                          All orders <ArrowRight aria-hidden="true" size={16} />
+                        </button>
+                      </div>
+                      <div className="recent-list">
+                        {data.orders.slice(0, 5).map((order) => (
+                          <button
+                            type="button"
+                            key={order.id}
+                            onClick={() => openOrder(order.id)}
+                          >
+                            <span className="queue-icon">
+                              <Package aria-hidden="true" size={19} />
+                            </span>
+                            <span>
+                              <strong>
+                                #{String(order.id).padStart(4, "0")} ·{" "}
+                                {order.customer}
+                              </strong>
+                              <small>
+                                {(() => {
+                                  const counts = countPieces(order);
+                                  if (order.is_draft)
+                                    return `${order.items.length} ${order.items.length === 1 ? "item" : "items"} · draft · not in queue`;
+                                  if (!counts.total)
+                                    return `No pieces · ${date(order.created_at)}`;
+                                  if (activeOrderIds.has(order.id))
+                                    return `${counts.queued} queued · 1 now printing · ${counts.printed} ready · ${counts.shipped} shipped`;
+                                  return `${counts.queued + counts.printing} to print · ${counts.printed} ready · ${counts.shipped} shipped`;
+                                })()}
+                              </small>
+                            </span>
+                            <OrderStatusBadge
+                              order={order}
+                              isActive={activeOrderIds.has(order.id)}
+                            />
+                          </button>
+                        ))}
+                        {!data.orders.length && (
+                          <Empty
+                            small
+                            icon={<ClipboardList aria-hidden="true" />}
+                            title="No orders yet"
+                            text="Create a draft to get started."
+                          />
+                        )}
+                      </div>
+                    </section>
+                    {data.settings.material_tracking && (
+                      <StudioOverview
+                        orders={data.orders}
+                        filaments={data.filaments.filter((f) => !f.archived)}
+                        showMoney={
+                          data.settings.show_money &&
+                          data.settings.cost_reporting
+                        }
+                        currency={data.settings.currency}
                       />
                     )}
-                  </div>
-                </section>
+                  </aside>
+                </div>
               </>
             )}
             {page === "queue" && (
               <>
                 <div className="page-heading">
                   <div>
-                    <span className="eyebrow">FULFILLMENT BOARD</span>
-                    <h1>{activeEntry ? "Now printing" : "Print queue"}</h1>
+                    <h1>Print queue</h1>
                     <p>
                       {activeEntry
                         ? `${activeEntry.item.product_name} · order #${String(activeEntry.order.id).padStart(4, "0")} is on the printer. ${queuedOnly.length} queued behind it · ${ready.length} ready to ship.`
@@ -963,9 +1020,8 @@ function App() {
                       Nearest ship-by dates first.
                     </p>
                   </div>
-                  <Button
+                  <PrimaryButton
                     label="New draft"
-                    variant="primary"
                     icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "order" })}
                   />
@@ -1017,7 +1073,6 @@ function App() {
                 <section className="panel queue-page-panel ready-panel">
                   <div className="panel-head">
                     <div>
-                      <span className="eyebrow">NEXT STEP</span>
                       <h2>Ready to ship</h2>
                       <p>
                         {ready.length}{" "}
@@ -1117,132 +1172,134 @@ function App() {
               <>
                 <div className="page-heading">
                   <div>
-                    <span className="eyebrow">WHAT YOU MAKE</span>
                     <h1>Products</h1>
                     <p>Your print catalogue and offered colour options.</p>
                   </div>
-                  <Button
+                  <PrimaryButton
                     label="Add product"
-                    variant="primary"
                     icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "product" })}
                   />
                 </div>
-                <label className="catalogue-archive-toggle">
-                  <input
-                    type="checkbox"
-                    checked={showArchivedCatalogue}
-                    onChange={(e) => setShowArchivedCatalogue(e.target.checked)}
-                  />{" "}
-                  Show archived catalogue entries
-                </label>
-                <div className="search catalogue-search">
-                  <Search aria-hidden="true" size={18} />
-                  <input
-                    aria-label="Search products"
-                    placeholder="Search products…"
-                    value={catalogueSearch}
-                    onChange={(e) => setCatalogueSearch(e.target.value)}
-                  />
+                <div className="catalogue-toolbar">
+                  <label className="catalogue-archive-toggle">
+                    <input
+                      type="checkbox"
+                      checked={showArchivedCatalogue}
+                      onChange={(e) =>
+                        setShowArchivedCatalogue(e.target.checked)
+                      }
+                    />{" "}
+                    Show archived catalogue entries
+                  </label>
+                  <div className="search catalogue-search">
+                    <Search aria-hidden="true" size={18} />
+                    <input
+                      aria-label="Search products"
+                      placeholder="Search products…"
+                      value={catalogueSearch}
+                      onChange={(e) => setCatalogueSearch(e.target.value)}
+                    />
+                  </div>
                 </div>
-                {data.products.length ? (
+                {visibleProducts.length ? (
                   <div className="product-grid">
-                    {data.products
-                      .filter(
-                        (p) =>
-                          !!p.archived === showArchivedCatalogue &&
-                          `${p.name} ${p.description} ${p.revision}`
-                            .toLowerCase()
-                            .includes(catalogueSearch.toLowerCase()),
-                      )
-                      .map((product) => (
-                        <article className="product-card" key={product.id}>
-                          <div
-                            className={`product-image${product.image_url ? "" : " placeholder"}`}
-                          >
-                            {product.image_url ? (
-                              <img src={product.image_url} alt={product.name} />
-                            ) : (
-                              <Boxes
-                                aria-hidden="true"
-                                size={42}
-                                strokeWidth={1.4}
-                              />
+                    {visibleProducts.map((product) => (
+                      <article className="product-card" key={product.id}>
+                        <div
+                          className={`product-image${product.image_url ? "" : " placeholder"}`}
+                        >
+                          {product.image_url ? (
+                            <img src={product.image_url} alt={product.name} />
+                          ) : (
+                            <Boxes
+                              aria-hidden="true"
+                              size={42}
+                              strokeWidth={1.4}
+                            />
+                          )}
+                        </div>
+                        <div className="product-body">
+                          <div className="product-title">
+                            <h3>{product.name}</h3>
+                            {data.settings.show_money && (
+                              <strong>
+                                {money(product.price, data.settings.currency)}
+                              </strong>
                             )}
                           </div>
-                          <div className="product-body">
-                            <div className="product-title">
-                              <h3>{product.name}</h3>
-                              {data.settings.show_money && (
-                                <strong>
-                                  {money(product.price, data.settings.currency)}
-                                </strong>
+                          <p>{product.description || "No description yet"}</p>
+                          <div className="product-foot">
+                            <div className="swatches">
+                              {product.filament_ids.map((fid) => {
+                                const filament = data.filaments.find(
+                                  (f) => f.id === fid,
+                                );
+                                return filament ? (
+                                  <span
+                                    key={fid}
+                                    role="img"
+                                    aria-label={`${filament.name}: ${filament.color}`}
+                                    title={filament.name}
+                                    style={{ background: filament.color }}
+                                  />
+                                ) : null;
+                              })}
+                              {product.filament_ids.length === 0 && (
+                                <small>No colours selected</small>
                               )}
                             </div>
-                            <p>{product.description || "No description yet"}</p>
-                            <div className="product-foot">
-                              <div className="swatches">
-                                {product.filament_ids.map((fid) => {
-                                  const filament = data.filaments.find(
-                                    (f) => f.id === fid,
-                                  );
-                                  return filament ? (
-                                    <span
-                                      key={fid}
-                                      role="img"
-                                      aria-label={`${filament.name}: ${filament.color}`}
-                                      title={filament.name}
-                                      style={{ background: filament.color }}
-                                    />
-                                  ) : null;
-                                })}
-                                {product.filament_ids.length === 0 && (
-                                  <small>No colours selected</small>
-                                )}
-                              </div>
-                              {!!product.archived && (
-                                <button
-                                  type="button"
-                                  className="outline-button"
-                                  disabled={!!pending[`product:${product.id}`]}
-                                  onClick={() =>
-                                    void action(
-                                      () =>
-                                        api(
-                                          `/products/${product.id}/restore`,
-                                          "POST",
-                                          { version: product.version },
-                                        ),
-                                      false,
-                                      `product:${product.id}`,
-                                    )
-                                  }
-                                >
-                                  Restore
-                                </button>
-                              )}
+                            {!!product.archived && (
                               <button
                                 type="button"
-                                className="icon-button"
-                                title="Edit product"
-                                aria-label={`Edit product ${product.name}`}
+                                className="outline-button"
                                 disabled={!!pending[`product:${product.id}`]}
                                 onClick={() =>
-                                  setDialog({ type: "product", value: product })
+                                  void action(
+                                    () =>
+                                      api(
+                                        `/products/${product.id}/restore`,
+                                        "POST",
+                                        { version: product.version },
+                                      ),
+                                    false,
+                                    `product:${product.id}`,
+                                  )
                                 }
                               >
-                                <Pencil aria-hidden="true" size={18} />
+                                Restore
                               </button>
-                            </div>
+                            )}
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Edit product"
+                              aria-label={`Edit product ${product.name}`}
+                              disabled={!!pending[`product:${product.id}`]}
+                              onClick={() =>
+                                setDialog({ type: "product", value: product })
+                              }
+                            >
+                              <Pencil aria-hidden="true" size={18} />
+                            </button>
                           </div>
-                        </article>
-                      ))}
+                        </div>
+                      </article>
+                    ))}
                   </div>
                 ) : (
                   <Empty
                     icon={<Boxes aria-hidden="true" />}
-                    title="Build your catalogue"
-                    text="Add a product, then choose which filament colours you can offer."
+                    title={
+                      data.products.length
+                        ? "No matching products"
+                        : "Build your catalogue"
+                    }
+                    text={
+                      data.products.length
+                        ? "Try another search or change the archive filter."
+                        : "Add a product, then choose which filament colours you can offer."
+                    }
                     action="Add product"
                     onAction={() => setDialog({ type: "product" })}
                   />
@@ -1253,152 +1310,147 @@ function App() {
               <>
                 <div className="page-heading">
                   <div>
-                    <span className="eyebrow">YOUR COLOUR LIBRARY</span>
                     <h1>Filaments</h1>
                     <p>Keep the materials and shades you own in one place.</p>
                   </div>
-                  <Button
+                  <PrimaryButton
                     label="Add filament"
-                    variant="primary"
                     icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "filament" })}
                   />
                 </div>
-                <label className="catalogue-archive-toggle">
-                  <input
-                    type="checkbox"
-                    checked={showArchivedCatalogue}
-                    onChange={(e) => setShowArchivedCatalogue(e.target.checked)}
-                  />{" "}
-                  Show archived catalogue entries
-                </label>
-                <div className="search catalogue-search">
-                  <Search aria-hidden="true" size={18} />
-                  <input
-                    aria-label="Search filaments"
-                    placeholder="Search filaments…"
-                    value={catalogueSearch}
-                    onChange={(e) => setCatalogueSearch(e.target.value)}
-                  />
+                <div className="catalogue-toolbar">
+                  <label className="catalogue-archive-toggle">
+                    <input
+                      type="checkbox"
+                      checked={showArchivedCatalogue}
+                      onChange={(e) =>
+                        setShowArchivedCatalogue(e.target.checked)
+                      }
+                    />{" "}
+                    Show archived catalogue entries
+                  </label>
+                  <div className="search catalogue-search">
+                    <Search aria-hidden="true" size={18} />
+                    <input
+                      aria-label="Search filaments"
+                      placeholder="Search filaments…"
+                      value={catalogueSearch}
+                      onChange={(e) => setCatalogueSearch(e.target.value)}
+                    />
+                  </div>
                 </div>
-                {data.filaments.length ? (
+                {visibleFilaments.length ? (
                   <div className="filament-grid">
-                    {data.filaments
-                      .filter(
-                        (f) =>
-                          !!f.archived === showArchivedCatalogue &&
-                          `${f.name} ${f.brand} ${f.material}`
-                            .toLowerCase()
-                            .includes(catalogueSearch.toLowerCase()),
-                      )
-                      .map((filament) => (
-                        <article className="filament-card" key={filament.id}>
-                          <div
-                            className="filament-swatch"
-                            style={{ background: filament.color }}
-                          >
-                            {filament.image_url ? (
-                              <img
-                                src={filament.image_url}
-                                alt={`${filament.name} spool`}
-                              />
-                            ) : (
-                              <div
-                                className="filament-ring"
-                                aria-hidden="true"
-                              />
-                            )}
+                    {visibleFilaments.map((filament) => (
+                      <article className="filament-card" key={filament.id}>
+                        <div
+                          className="filament-swatch"
+                          style={{ background: filament.color }}
+                        >
+                          {filament.image_url ? (
+                            <img
+                              src={filament.image_url}
+                              alt={`${filament.name} spool`}
+                            />
+                          ) : (
+                            <div className="filament-ring" aria-hidden="true" />
+                          )}
+                        </div>
+                        <div className="filament-info">
+                          <span className="material">{filament.material}</span>
+                          <h3>{filament.name}</h3>
+                          <p>
+                            {filament.brand || "Unbranded"} ·{" "}
+                            {filament.color.toUpperCase()}
+                          </p>
+                          {filament.notes && <small>{filament.notes}</small>}
+                          <div className="stock-count" aria-live="polite">
+                            <strong>
+                              {filament.spool_count}{" "}
+                              {filament.spool_count === 1 ? "spool" : "spools"}
+                            </strong>
+                            <small>
+                              {filament.grams_per_spool} g each ·{" "}
+                              {data.settings.material_tracking
+                                ? `${filament.remaining_grams.toFixed(0)} g remaining`
+                                : ""}
+                            </small>
                           </div>
-                          <div className="filament-info">
-                            <span className="material">
-                              {filament.material}
-                            </span>
-                            <h3>{filament.name}</h3>
-                            <p>
-                              {filament.brand || "Unbranded"} ·{" "}
-                              {filament.color.toUpperCase()}
-                            </p>
-                            {filament.notes && <small>{filament.notes}</small>}
-                            <div className="stock-count" aria-live="polite">
-                              <strong>
-                                {filament.spool_count}{" "}
-                                {filament.spool_count === 1
-                                  ? "spool"
-                                  : "spools"}
-                              </strong>
-                              <small>
-                                {filament.grams_per_spool} g each ·{" "}
-                                {data.settings.material_tracking
-                                  ? `${filament.remaining_grams.toFixed(0)} g remaining`
-                                  : ""}
-                              </small>
-                            </div>
-                            <div className="stock-actions">
-                              <button
-                                type="button"
-                                aria-label={`Remove one ${filament.name} spool`}
-                                onClick={() => adjustStock(filament, -1)}
-                                disabled={
-                                  !!pending[`filament:${filament.id}`] ||
-                                  filament.spool_count === 0
-                                }
-                              >
-                                <Minus aria-hidden="true" size={15} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Add one ${filament.name} spool`}
-                                disabled={
-                                  !!pending[`filament:${filament.id}`] ||
-                                  filament.spool_count >= 100000
-                                }
-                                onClick={() => adjustStock(filament, 1)}
-                              >
-                                <Plus aria-hidden="true" size={15} />
-                              </button>
-                            </div>
-                          </div>
-                          {!!filament.archived && (
+                          <div className="stock-actions">
                             <button
                               type="button"
-                              className="outline-button"
-                              disabled={!!pending[`filament:${filament.id}`]}
-                              onClick={() =>
-                                void action(
-                                  () =>
-                                    api(
-                                      `/filaments/${filament.id}/restore`,
-                                      "POST",
-                                      { version: filament.version },
-                                    ),
-                                  false,
-                                  `filament:${filament.id}`,
-                                )
+                              aria-label={`Remove one ${filament.name} spool`}
+                              onClick={() => adjustStock(filament, -1)}
+                              disabled={
+                                !!pending[`filament:${filament.id}`] ||
+                                filament.spool_count === 0
                               }
                             >
-                              Restore
+                              <Minus aria-hidden="true" size={15} />
                             </button>
-                          )}
+                            <button
+                              type="button"
+                              aria-label={`Add one ${filament.name} spool`}
+                              disabled={
+                                !!pending[`filament:${filament.id}`] ||
+                                filament.spool_count >= 100000
+                              }
+                              onClick={() => adjustStock(filament, 1)}
+                            >
+                              <Plus aria-hidden="true" size={15} />
+                            </button>
+                          </div>
+                        </div>
+                        {!!filament.archived && (
                           <button
                             type="button"
-                            className="icon-button"
-                            title="Edit filament"
-                            aria-label={`Edit filament ${filament.name}`}
+                            className="outline-button"
                             disabled={!!pending[`filament:${filament.id}`]}
                             onClick={() =>
-                              setDialog({ type: "filament", value: filament })
+                              void action(
+                                () =>
+                                  api(
+                                    `/filaments/${filament.id}/restore`,
+                                    "POST",
+                                    { version: filament.version },
+                                  ),
+                                false,
+                                `filament:${filament.id}`,
+                              )
                             }
                           >
-                            <Pencil aria-hidden="true" size={18} />
+                            Restore
                           </button>
-                        </article>
-                      ))}
+                        )}
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title="Edit filament"
+                          aria-label={`Edit filament ${filament.name}`}
+                          disabled={!!pending[`filament:${filament.id}`]}
+                          onClick={() =>
+                            setDialog({ type: "filament", value: filament })
+                          }
+                        >
+                          <Pencil aria-hidden="true" size={18} />
+                        </button>
+                      </article>
+                    ))}
                   </div>
                 ) : (
                   <Empty
                     icon={<Layers3 aria-hidden="true" />}
-                    title="Start your colour library"
-                    text="Add your first spool to make it available for products."
+                    title={
+                      data.filaments.length
+                        ? "No matching filaments"
+                        : "Start your colour library"
+                    }
+                    text={
+                      data.filaments.length
+                        ? "Try another search or change the archive filter."
+                        : "Add your first spool to make it available for products."
+                    }
                     action="Add filament"
                     onAction={() => setDialog({ type: "filament" })}
                   />
@@ -1419,13 +1471,11 @@ function App() {
               <>
                 <div className="page-heading">
                   <div>
-                    <span className="eyebrow">SHARED WORKSPACE</span>
                     <h1>Team</h1>
                     <p>Manage access to your shared orders and catalogue.</p>
                   </div>
-                  <Button
+                  <PrimaryButton
                     label="Add user"
-                    variant="primary"
                     icon={<Plus aria-hidden="true" size={17} />}
                     onClick={() => setDialog({ type: "user" })}
                   />
@@ -1541,7 +1591,6 @@ function App() {
           <Modal busy={busy} onClose={() => setDialog(null)}>
             <div className="modal-top">
               <div>
-                <span className="eyebrow">PRINTROOM</span>
                 <h2 id="dialog-heading">
                   {dialog.type === "password"
                     ? `Change ${dialog.value.name}'s password`
@@ -1911,9 +1960,8 @@ function OrderDetail({
             <Pencil aria-hidden="true" size={16} /> Edit details
           </button>
           {!!order.is_draft && (
-            <Button
+            <PrimaryButton
               label={busy ? "Confirming…" : "Confirm sale"}
-              variant="primary"
               icon={<CheckCircle2 aria-hidden="true" size={18} />}
               isDisabled={
                 busy ||
@@ -2364,18 +2412,29 @@ function Stat({
   value,
   sub,
   alert = false,
+  icon,
+  onClick,
 }: {
   label: string;
-  value: number;
+  value: number | string;
   sub?: string;
   alert?: boolean;
+  icon: React.ReactNode;
+  onClick: () => void;
 }) {
   return (
-    <div className={`stat${alert ? " stat-alert" : ""}`}>
-      <span>{label}</span>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`stat${alert ? " stat-alert" : ""}`}
+    >
+      <span className="stat-label">
+        {label}
+        {icon}
+      </span>
       <strong>{value}</strong>
       {sub && <small>{sub}</small>}
-    </div>
+    </button>
   );
 }
 function NowPrintingBanner({
@@ -2481,9 +2540,8 @@ function Empty({
       <h3>{title}</h3>
       <p>{text}</p>
       {action && (
-        <Button
+        <PrimaryButton
           label={action}
-          variant="primary"
           icon={<Plus aria-hidden="true" size={16} />}
           onClick={onAction}
         />
@@ -3272,7 +3330,6 @@ function SettingsPanel({
     <div className="settings-page">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">MAKE IT YOURS</span>
           <h1>Settings</h1>
           <p>Choose how your studio works for you.</p>
         </div>
@@ -3342,8 +3399,10 @@ function SettingsPanel({
               ["sales_tools", "Payments, shipment tracking and packing slips"],
             ] as const
           ).map(([key, label]) => (
-            <label className="field" key={key}>
-              <span>{label}</span>
+            <label className="setting-toggle" key={key}>
+              <span>
+                <strong>{label}</strong>
+              </span>
               <input
                 type="checkbox"
                 checked={features[key]}
