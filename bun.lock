@@ -5,8 +5,8 @@
     "": {
       "name": "printroom",
       "dependencies": {
-        "@astryxdesign/core": "^0.7.3",
-        "@astryxdesign/theme-stone": "^0.7.3",
+        "@astryxdesign/core": "^0.7.4",
+        "@astryxdesign/theme-stone": "^0.7.4",
         "@stylexjs/stylex": "^0.19.0",
         "lucide-react": "^1.61.0",
         "react": "^19.3.1",
@@ -27,9 +27,9 @@
     },
   },
   "packages": {
-    "@astryxdesign/core": ["@astryxdesign/core@0.7.3", "", { "dependencies": { "intl-messageformat": "^11.2.9" }, "peerDependencies": { "@stylexjs/stylex": "^0.19.0", "react": ">=19.0.0", "react-dom": ">=19.0.0" } }, "sha512-dDVg5pUE7IwpkSl46rw/Oahbwij2e26Imwbao0AK3mLBBZo7yVzibFdf6dLfFKN3p+zy7a2ZMQZeOIb+xSEKpg=="],
+    "@astryxdesign/core": ["@astryxdesign/core@0.7.4", "", { "dependencies": { "intl-messageformat": "^11.2.9" }, "peerDependencies": { "@stylexjs/stylex": "^0.19.0", "react": ">=19.0.0", "react-dom": ">=19.0.0" }, "hasInstallScript": true }, "sha512-zd/XfUw8OH8Dj65w6cPYamMXgb11P7oIgrlXgyBGaHXKJi3aedkU17Q+lERgv7YL3Bv4/UKPMqKL/QZkvoay1w=="],
 
-    "@astryxdesign/theme-stone": ["@astryxdesign/theme-stone@0.7.3", "", { "dependencies": { "lucide-react": "^1.18.0" }, "peerDependencies": { "@astryxdesign/core": "0.7.3", "react": ">=19" } }, "sha512-Yc0bwr4a+HGbu7RM50cRN6CNqA1PmIYebXGpLkVLHDVSSD4xlVvRo0+c1lJF7LIFf5++qzY0xY+7W1uhqMoDBw=="],
+    "@astryxdesign/theme-stone": ["@astryxdesign/theme-stone@0.7.4", "", { "dependencies": { "lucide-react": "^1.18.0" }, "peerDependencies": { "@astryxdesign/core": "0.7.4", "react": ">=19" } }, "sha512-Cg1+GPLNg5JQxI8XYlykazDNFoWJxtinqtUSWk0G+cdZj8UZhRiv8PyYFFiVR3eCdimAgDwmprBNhrFlj37fSw=="],
 
     "@babel/code-frame": ["@babel/code-frame@7.29.7", "", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
 
