@@ -114,6 +114,7 @@ export function PieceQueue({
               className={`piece-row${active ? " active-piece" : ""}`}
               key={piece.id}
               aria-current={active ? "true" : undefined}
+              style={{ ["--ticket-color" as string]: item.color }}
             >
               <span
                 role="img"

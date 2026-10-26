@@ -622,7 +622,6 @@ function App() {
     icon: React.ReactNode;
     count?: number;
     alert?: boolean;
-    mobileLabel?: string;
   }[] = [
     {
       id: "overview",
@@ -632,7 +631,6 @@ function App() {
     {
       id: "queue",
       label: "Print queue",
-      mobileLabel: "Queue",
       icon: <ListTodo aria-hidden="true" size={20} />,
       count: queue.length,
       alert: !!activeEntry,
@@ -677,6 +675,26 @@ function App() {
       icon: <Settings2 aria-hidden="true" size={20} />,
     },
   ];
+  const sections: { title: string; ids: Page[] }[] = [
+    { title: "Make", ids: ["overview", "queue", "orders"] },
+    {
+      title: "Manage",
+      ids: ["products", "filaments", ...(data.settings.production_tools ? ["jobs" as Page] : [])],
+    },
+    {
+      title: "System",
+      ids: [...(data.user.is_admin ? ["team" as Page] : []), "settings"],
+    },
+  ];
+  const tabById = Object.fromEntries(tabs.map((tab) => [tab.id, tab]));
+  const pageLabel =
+    page === "products" || page === "filaments"
+      ? "Library"
+      : (tabById[page]?.label ?? "Studio");
+  const go = (id: Page) => {
+    setPage(id);
+    setSelectedOrder(null);
+  };
   const openOrder = (id: number) => {
     setPage("orders");
     setSelectedOrder(id);
@@ -700,65 +718,109 @@ function App() {
               printroom<span className="brand-dot">.</span>
             </span>
           </div>
-          <div className="workspace-label">Studio workspace</div>
-          <nav aria-label="Workspace">
-            {tabs.map((tab) => (
-              <button
-                type="button"
-                key={tab.id}
-                data-page={tab.id}
-                aria-current={page === tab.id ? "page" : undefined}
-                title={tab.label}
-                className={`nav${page === tab.id ? " active" : ""}`}
-                onClick={() => {
-                  setPage(tab.id);
-                  setSelectedOrder(null);
-                }}
-              >
-                {tab.icon}
-                <span
-                  className={tab.mobileLabel ? "desktop-nav-label" : undefined}
-                >
-                  {tab.label}
-                </span>
-                {tab.mobileLabel && (
-                  <span className="mobile-only">{tab.mobileLabel}</span>
-                )}
-                {tab.id === "queue" && tab.alert && (
-                  <i
-                    className="nav-printing-dot"
-                    aria-label="A print is running"
-                    title="A print is running"
-                  />
-                )}
-                {!!tab.count && (
-                  <b aria-hidden="true">{tab.count > 99 ? "99+" : tab.count}</b>
-                )}
-              </button>
+          <nav className="desktop-nav" aria-label="Workspace">
+            {sections.map((section) => (
+              <div className="nav-section" key={section.title}>
+                <div className="workspace-label nav-section-label">
+                  {section.title}
+                </div>
+                {section.ids.map((id) => {
+                  const tab = tabById[id];
+                  if (!tab) return null;
+                  return (
+                    <button
+                      type="button"
+                      key={tab.id}
+                      data-page={tab.id}
+                      aria-current={page === tab.id ? "page" : undefined}
+                      title={tab.label}
+                      className={`nav${page === tab.id ? " active" : ""}`}
+                      onClick={() => go(tab.id)}
+                    >
+                      {tab.icon}
+                      <span>{tab.label}</span>
+                      {tab.id === "queue" && tab.alert && (
+                        <i
+                          className="nav-printing-dot"
+                          aria-label="A print is running"
+                          title="A print is running"
+                        />
+                      )}
+                      {!!tab.count && (
+                        <b aria-hidden="true">
+                          {tab.count > 99 ? "99+" : tab.count}
+                        </b>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             ))}
+          </nav>
+          <nav className="mobile-nav mobile-only" aria-label="Primary">
             <button
               type="button"
-              className={`nav mobile-only${page === "products" || page === "filaments" ? " active" : ""}`}
-              aria-current={
-                page === "products" || page === "filaments" ? "page" : undefined
-              }
-              onClick={() => {
-                setPage(page === "filaments" ? "filaments" : "products");
-                setSelectedOrder(null);
-              }}
+              className={`nav${page === "overview" ? " active" : ""}`}
+              aria-current={page === "overview" ? "page" : undefined}
+              onClick={() => go("overview")}
             >
-              <Boxes aria-hidden="true" size={20} />
-              <span>Catalogue</span>
+              <LayoutDashboard aria-hidden="true" size={22} />
+              <span>Home</span>
             </button>
             <button
               type="button"
-              className={`nav mobile-only${["settings", "team", "jobs"].includes(page) ? " active" : ""}`}
-              aria-label="More"
+              className={`nav${page === "queue" ? " active" : ""}`}
+              aria-current={page === "queue" ? "page" : undefined}
+              onClick={() => go("queue")}
+            >
+              <ListTodo aria-hidden="true" size={22} />
+              <span>Queue</span>
+              {!!queue.length && (
+                <b aria-hidden="true">
+                  {queue.length > 99 ? "99+" : queue.length}
+                </b>
+              )}
+              {!!activeEntry && (
+                <i
+                  className="nav-printing-dot"
+                  aria-label="A print is running"
+                />
+              )}
+            </button>
+            <button
+              type="button"
+              className={`nav${page === "orders" ? " active" : ""}`}
+              aria-current={page === "orders" ? "page" : undefined}
+              onClick={() => go("orders")}
+            >
+              <ClipboardList aria-hidden="true" size={22} />
+              <span>Orders</span>
+              {!!data.orders.filter((o) => o.is_draft).length && (
+                <b aria-hidden="true">
+                  {data.orders.filter((o) => o.is_draft).length}
+                </b>
+              )}
+            </button>
+            <button
+              type="button"
+              className={`nav${page === "products" || page === "filaments" ? " active" : ""}`}
+              aria-current={
+                page === "products" || page === "filaments" ? "page" : undefined
+              }
+              onClick={() => go("products")}
+            >
+              <Boxes aria-hidden="true" size={22} />
+              <span>Library</span>
+            </button>
+            <button
+              type="button"
+              className={`nav${["settings", "team", "jobs"].includes(page) ? " active" : ""}`}
+              aria-label="More pages and account"
               aria-haspopup="dialog"
               aria-expanded={mobileMenu}
               onClick={() => setMobileMenu(true)}
             >
-              <Ellipsis aria-hidden="true" size={20} />
+              <Ellipsis aria-hidden="true" size={22} />
               <span>More</span>
             </button>
           </nav>
@@ -788,17 +850,20 @@ function App() {
             <div className="workspace-context">
               <span>Studio</span>
               <span aria-hidden="true">/</span>
-              <strong>{tabs.find((tab) => tab.id === page)?.label}</strong>
+              <strong>{pageLabel}</strong>
               {chosen && (
                 <>
                   <span aria-hidden="true">/</span>
-                  <span>#{String(chosen.id).padStart(4, "0")}</span>
+                  <span className="crumb-id">
+                    #{String(chosen.id).padStart(4, "0")}
+                  </span>
                 </>
               )}
             </div>
-            <span className="mobile-only mobile-brand">
-              <Printer aria-hidden="true" size={19} />
-              printroom<span className="brand-dot">.</span>
+            <span className="mobile-only mobile-page-title" aria-live="polite">
+              {chosen
+                ? `Order #${String(chosen.id).padStart(4, "0")}`
+                : pageLabel}
             </span>
             <div className="top-right">
               <span
@@ -833,10 +898,7 @@ function App() {
           </header>
           <div className={`content workspace-content page-${page}`}>
             {(page === "products" || page === "filaments") && (
-              <nav
-                className="mobile-only catalogue-tabs"
-                aria-label="Catalogue"
-              >
+              <nav className="catalogue-tabs" aria-label="Library sections">
                 {(["products", "filaments"] as const).map((tab) => (
                   <button
                     type="button"
@@ -1537,7 +1599,7 @@ function App() {
           <Modal busy={false} onClose={() => setMobileMenu(false)}>
             <div className="modal-top">
               <div>
-                <h2>Workspace</h2>
+                <h2>More</h2>
                 <p className="mobile-menu-account">
                   {data.user.name} · @{data.user.username}
                 </p>
@@ -1556,25 +1618,44 @@ function App() {
               aria-label="More workspace pages"
             >
               {tabs
-                .filter((tab) => ["settings", "team", "jobs"].includes(tab.id))
+                .filter((tab) =>
+                  ["products", "filaments", "jobs", "team", "settings"].includes(
+                    tab.id,
+                  ),
+                )
                 .map((tab) => (
                   <button
                     type="button"
                     key={tab.id}
                     aria-current={page === tab.id ? "page" : undefined}
                     onClick={() => {
-                      setPage(tab.id);
-                      setSelectedOrder(null);
+                      go(tab.id);
                       setMobileMenu(false);
                     }}
                   >
                     {tab.icon}
-                    <span>{tab.label}</span>
+                    <span>
+                      {tab.id === "products" || tab.id === "filaments"
+                        ? tab.label
+                        : tab.label}
+                      <small>
+                        {tab.id === "products"
+                          ? "Catalogue of printable products"
+                          : tab.id === "filaments"
+                            ? "Materials and spool stock"
+                            : tab.id === "jobs"
+                              ? "Every print attempt"
+                              : tab.id === "team"
+                                ? "People with studio access"
+                                : "Workspace, notifications, account"}
+                      </small>
+                    </span>
                     <ArrowRight aria-hidden="true" size={17} />
                   </button>
                 ))}
               <button
                 type="button"
+                className="mobile-menu-signout"
                 disabled={Object.keys(pending).length > 0}
                 onClick={() => {
                   setMobileMenu(false);
@@ -1582,7 +1663,10 @@ function App() {
                 }}
               >
                 <LogOut aria-hidden="true" size={20} />
-                <span>Sign out</span>
+                <span>
+                  Sign out
+                  <small>Signed in as @{data.user.username}</small>
+                </span>
               </button>
             </nav>
           </Modal>
