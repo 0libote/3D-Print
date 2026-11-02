@@ -679,7 +679,11 @@ function App() {
     { title: "Make", ids: ["overview", "queue", "orders"] },
     {
       title: "Manage",
-      ids: ["products", "filaments", ...(data.settings.production_tools ? ["jobs" as Page] : [])],
+      ids: [
+        "products",
+        "filaments",
+        ...(data.settings.production_tools ? ["jobs" as Page] : []),
+      ],
     },
     {
       title: "System",
@@ -1619,9 +1623,13 @@ function App() {
             >
               {tabs
                 .filter((tab) =>
-                  ["products", "filaments", "jobs", "team", "settings"].includes(
-                    tab.id,
-                  ),
+                  [
+                    "products",
+                    "filaments",
+                    "jobs",
+                    "team",
+                    "settings",
+                  ].includes(tab.id),
                 )
                 .map((tab) => (
                   <button

@@ -79,8 +79,7 @@
 .stat-alert {
   border-color: var(--accent-strong);
   background:
-    linear-gradient(180deg, var(--accent-soft), transparent 70%),
-    var(--surface);
+    linear-gradient(180deg, var(--accent-soft), transparent 70%), var(--surface);
 }
 .stat-label {
   display: flex;
@@ -650,12 +649,11 @@ html[data-theme="dark"] .queue-icon {
 .product-image {
   min-height: 150px;
   height: 100%;
-  background:
-    repeating-linear-gradient(
-      0deg,
-      var(--surface-soft) 0 3px,
-      var(--hover) 3px 4px
-    );
+  background: repeating-linear-gradient(
+    0deg,
+    var(--surface-soft) 0 3px,
+    var(--hover) 3px 4px
+  );
   color: var(--subtle);
   display: grid;
   place-items: center;
@@ -940,7 +938,9 @@ html[data-theme="dark"] .material {
 }
 @media (min-width: 761px) {
   .detail-item-card {
-    grid-template-columns: 54px minmax(0, 1fr) minmax(140px, 190px) auto auto auto;
+    grid-template-columns:
+      54px minmax(0, 1fr) minmax(140px, 190px)
+      auto auto auto;
     gap: 14px;
     padding: 16px 22px;
   }
