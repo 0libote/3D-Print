@@ -58,7 +58,8 @@
   --draft-soft: #f1eafa;
   --queued: #46586f;
   --queued-soft: #e9eef4;
-  --shadow-card: 0 1px 2px rgb(19 27 40 / 0.06), 0 4px 16px rgb(19 27 40 / 0.06);
+  --shadow-card:
+    0 1px 2px rgb(19 27 40 / 0.06), 0 4px 16px rgb(19 27 40 / 0.06);
   --shadow-sheet: 0 -8px 40px rgb(19 27 40 / 0.18);
 }
 
