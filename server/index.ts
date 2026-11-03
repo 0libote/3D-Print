@@ -4,7 +4,6 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import webpush from "web-push";
-import { orderStatus } from "../shared/order-progress.ts";
 import { migrateProduction } from "./migrations";
 import { production, RequestError } from "./production";
 import {
@@ -530,17 +529,6 @@ function writableOrder(orderId: number) {
   if (order.cancelled || order.archived)
     throw new RequestError("Restore this order before editing its items", 409);
   return order;
-}
-function updateOrderStatus(orderId: number) {
-  const order = one("SELECT is_draft FROM orders WHERE id=?", orderId);
-  if (!order || order.is_draft) return;
-  const items = all("SELECT status FROM order_items WHERE order_id=?", orderId);
-  const status = orderStatus(items.map((item) => item.status));
-  run(
-    "UPDATE orders SET status=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-    status,
-    orderId,
-  );
 }
 function quantity(value: unknown, label: string, min: number, max: number) {
   const number = Number(value);
@@ -1776,7 +1764,7 @@ async function handleRequest(
           "item_added",
           `Added ${count} × ${product.name}${filament ? ` in ${filament.name}` : ""}.`,
         );
-        updateOrderStatus(orderId);
+        workshop.syncOrder(orderId);
         run(
           "UPDATE orders SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
           orderId,
@@ -1879,29 +1867,29 @@ async function handleRequest(
       })();
     }
     if (item && req.method === "DELETE") {
-      const itemId = id(item[1]);
-      const existing = one(
-        "SELECT order_id,product_name FROM order_items WHERE id=?",
-        itemId,
-      );
-      if (!existing) return bad("Item not found", 404);
-      const owningOrder = writableOrder(existing.order_id);
-      if (
-        !owningOrder.is_draft &&
-        one(
-          "SELECT COUNT(*) AS count FROM order_items WHERE order_id=?",
-          existing.order_id,
-        )!.count === 1
-      )
-        return bad("Cancel this order instead of removing its final item", 409);
-      if (
-        one(
-          "SELECT id FROM order_pieces WHERE item_id=? AND status='printing'",
-          itemId,
+      const b = await body(req),
+        itemId = id(item[1]);
+      return db.transaction(() => {
+        const existing = expectVersion("order_items", itemId, b.version);
+        const owningOrder = writableOrder(existing.order_id);
+        if (
+          !owningOrder.is_draft &&
+          one(
+            "SELECT COUNT(*) AS count FROM order_items WHERE order_id=?",
+            existing.order_id,
+          )!.count === 1
         )
-      )
-        return bad("Stop the active print before removing this item", 409);
-      db.transaction(() => {
+          return bad(
+            "Cancel this order instead of removing its final item",
+            409,
+          );
+        if (
+          one(
+            "SELECT id FROM order_pieces WHERE item_id=? AND status='printing'",
+            itemId,
+          )
+        )
+          return bad("Stop the active print before removing this item", 409);
         run("DELETE FROM order_items WHERE id=?", itemId);
         activity(
           currentUser,
@@ -1909,13 +1897,13 @@ async function handleRequest(
           "item_deleted",
           `Removed ${existing.product_name} from the order.`,
         );
-        updateOrderStatus(existing.order_id);
+        workshop.syncOrder(existing.order_id);
         run(
           "UPDATE orders SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
           existing.order_id,
         );
+        return json({ ok: true });
       })();
-      return json({ ok: true });
     }
     return bad("Not found", 404);
   } catch (error) {

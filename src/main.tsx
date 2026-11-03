@@ -1196,7 +1196,12 @@ function App() {
                   onDeleteItem={async (itemId) => {
                     if (await confirm("Remove this item?"))
                       void action(
-                        () => api(`/items/${itemId}`, "DELETE"),
+                        () =>
+                          api(`/items/${itemId}`, "DELETE", {
+                            version: chosen.items.find(
+                              (item) => item.id === itemId,
+                            )!.version,
+                          }),
                         false,
                         `order:${chosen.id}`,
                       );

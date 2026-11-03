@@ -53,11 +53,14 @@ export function production(db: Database) {
       )
       .get(itemId);
     if (!item) return;
+    syncOrder(item.order_id);
+  }
+  function syncOrder(orderId: number) {
     const states = db
       .query<{ status: ItemStatus }, [number]>(
         "SELECT status FROM order_items WHERE order_id=?",
       )
-      .all(item.order_id);
+      .all(orderId);
     // Partial completed work also means an order is in progress, even with no active print.
     const aggregate = orderStatus(states.map((s) => s.status));
     const partial =
@@ -66,10 +69,10 @@ export function production(db: Database) {
         .query(
           "SELECT id FROM order_items WHERE order_id=? AND printed_quantity>0 LIMIT 1",
         )
-        .get(item.order_id);
+        .get(orderId);
     db.query(
       "UPDATE orders SET status=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_draft=0",
-    ).run(partial ? "printing" : aggregate, item.order_id);
+    ).run(partial ? "printing" : aggregate, orderId);
   }
   function reconcile(itemId: number, counts: Counts) {
     const existing = pieces(itemId);
@@ -314,5 +317,12 @@ export function production(db: Database) {
       throw error;
     }
   }
-  return { pieces, sync, reconcile, transition, transitionInTransaction };
+  return {
+    pieces,
+    sync,
+    syncOrder,
+    reconcile,
+    transition,
+    transitionInTransaction,
+  };
 }
