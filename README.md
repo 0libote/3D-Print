@@ -56,7 +56,7 @@ Printroom is installable as a PWA and has a mobile navigation bar. On iPhone or 
 
 ## Development
 
-Requires Bun 1.4.2. In separate terminals (use an isolated `DATA_DIR` so dev never touches real data):
+Requires Bun 1.4.4. In separate terminals (use an isolated `DATA_DIR` so dev never touches real data):
 
 ```bash
 bun install

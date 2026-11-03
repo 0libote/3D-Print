@@ -1100,3 +1100,48 @@ test("successful login resets the failure throttle and excess attempts are limit
     ).status,
   ).toBe(429);
 });
+
+test("item deletion and addition preserve partial order progress", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Partial deletion" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 2 });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  await api(`/orders/${id}/confirm`, "POST", {});
+  let order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect((await act(order.items[0].pieces[0], "start")).status).toBe(200);
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect((await act(order.items[0].pieces[0], "complete")).status).toBe(200);
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  await api(`/items/${order.items[1].id}`, "DELETE", {
+    version: order.items[1].version,
+  });
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(order.status).toBe("printing");
+  expect(order.items).toHaveLength(1);
+  expect(order.items[0].printed_quantity).toBe(1);
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(order.status).toBe("printing");
+});
+
+test("item deletion rejects missing and stale versions without removing newer work", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Stale deletion" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  let order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  const item = order.items[0];
+  await api(`/items/${item.id}`, "PUT", { ...item, quantity: 2 });
+  for (const body of [{}, { version: item.version }]) {
+    expect((await request(`/items/${item.id}`, "DELETE", body)).status).toBe(
+      409,
+    );
+  }
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(order.items[0].quantity).toBe(2);
+  expect(
+    (await api(`/orders/${id}/activity`)).some(
+      (e: any) => e.kind === "item_deleted",
+    ),
+  ).toBe(false);
+  await api(`/items/${item.id}`, "DELETE", { version: order.items[0].version });
+  order = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(order.items).toHaveLength(0);
+});
