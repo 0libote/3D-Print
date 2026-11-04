@@ -46,7 +46,7 @@ Order details use a full-page view. Pieces still to print appear in the print qu
 
 Signed-in browsers receive changes from other users automatically. A live status appears in the top bar; the app also refreshes when you return to the tab and checks periodically if the live connection is interrupted.
 
-Order items retain their product name, price, filament name and colour when added. Editing or archiving a catalogue entry will not change an existing order. Archived entries can be restored. Cancel or archive confirmed orders to retain their history; only drafts can be permanently deleted. The overview shows the active queue and recent orders. Each order also shows who changed it and when.
+Order items retain their product name, price, filament name and colour when added. Editing or archiving a catalogue entry will not change an existing order. Archived entries can be restored. Cancel or archive confirmed orders to retain their history; only drafts can be permanently deleted. Deleted order numbers are never assigned to new orders. The overview shows the active queue and recent orders. Each order also shows who changed it and when.
 
 In **Settings**, an owner can hide all price and total displays or select a currency. Price data stays in the database when hidden. Product images are examples; the swatch shows the chosen filament colour, but does not recolour an uploaded image.
 
@@ -109,7 +109,7 @@ bun run build
 bun run format:check
 ```
 
-Tests cover individual pieces, simultaneous starts, stock consumption, snapshots, stale edits, permissions, transactional shipments, pagination, upgrade fixtures, upload cleanup and backup/recovery. They live in 7 files: `tests/api.test.ts`, `tests/api-path.test.ts`, `tests/maintenance.test.ts`, `tests/migrations.test.ts`, `tests/order-progress.test.ts`, `tests/service-worker.test.ts` and `tests/setup.test.ts`. `/healthz` provides the container health check.
+Tests cover individual pieces, simultaneous starts, stock consumption, snapshots, stale edits, permissions, transactional shipments, pagination, upgrade fixtures, upload cleanup and backup/recovery. They live in 9 files: `tests/api.test.ts`, `tests/api-path.test.ts`, `tests/auth-races.test.ts`, `tests/validation.test.ts`, `tests/maintenance.test.ts`, `tests/migrations.test.ts`, `tests/order-progress.test.ts`, `tests/service-worker.test.ts` and `tests/setup.test.ts`. `/healthz` provides the container health check.
 
 Manual-only checks (not covered by `bun test`):
 
@@ -123,7 +123,7 @@ Set machine cost per hour, electricity price per kWh and average printer watts i
 
 Order details show estimated material, machine and electricity costs plus estimated contribution (sale value minus those costs). Print history and order totals record material consumption and machine/energy costs for every finished attempt, including failures and stopped attempts. Machine and energy actuals use elapsed time between Start and Complete/Fail/Stop; finish the attempt promptly for useful figures. Running attempts are not yet included in recorded costs.
 
-These are production contributions, not accounting profit: labour, shipping, tax and other expenses are excluded. Zero rates, missing product estimates and historical progress without print attempts leave costs incomplete. Currency changes do not convert catalogue prices or material costs; enter values in the workspace's current currency for new work.
+These are production contributions, not accounting profit: labour, shipping, tax and other expenses are excluded. Zero rates, missing product estimates and historical progress without print attempts leave costs incomplete. Currency changes do not convert catalogue prices or material costs; enter values in the workspace's current currency for new work. Older orders in a different currency keep their saved items and allow quantity/progress corrections, but adding or replacing products or filaments requires a new order in the current currency.
 
 ## Basic mode and optional tools
 

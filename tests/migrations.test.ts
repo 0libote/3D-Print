@@ -7,6 +7,7 @@ test("production migration preserves partial counts, repairs drafts and is idemp
   const db = new Database(":memory:");
   db.exec(`
     CREATE TABLE users(id INTEGER PRIMARY KEY);
+    CREATE TABLE activity_events(order_id INTEGER); INSERT INTO activity_events VALUES(99);
     CREATE TABLE app_settings(key TEXT,value TEXT); INSERT INTO app_settings VALUES('currency','USD');
     CREATE TABLE orders(id INTEGER PRIMARY KEY,status TEXT,is_draft INTEGER,ship_by TEXT,updated_at TEXT);
     CREATE TABLE products(id INTEGER PRIMARY KEY);
@@ -37,6 +38,9 @@ test("production migration preserves partial counts, repairs drafts and is idemp
   });
   expect(
     db.query("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-  ).toEqual({ count: 4 });
+  ).toEqual({ count: 5 });
+  expect(
+    db.query("SELECT value FROM app_settings WHERE key='last_order_id'").get(),
+  ).toEqual({ value: "99" });
   db.close();
 });
