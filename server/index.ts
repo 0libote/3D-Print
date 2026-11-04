@@ -789,13 +789,20 @@ async function handleRequest(
         !(await verifyPassword(String(b.password ?? ""), user.password_hash))
       )
         return bad("Incorrect username or password", 401);
-      loginAttempts.delete(server.requestIP?.(req)?.address || "local");
       const token = randomHex(32);
-      run(
-        "INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))",
-        hash(token),
-        user.id,
-      );
+      db.transaction(() => {
+        if (
+          one("SELECT password_hash FROM users WHERE id=?", user.id)
+            ?.password_hash !== user.password_hash
+        )
+          throw new RequestError("Credentials changed. Sign in again", 401);
+        run(
+          "INSERT INTO sessions VALUES (?,?,datetime('now','+30 days'))",
+          hash(token),
+          user.id,
+        );
+      })();
+      loginAttempts.delete(server.requestIP?.(req)?.address || "local");
       return new Response(JSON.stringify({ ok: true }), {
         headers: {
           "Content-Type": "application/json",
@@ -826,6 +833,7 @@ async function handleRequest(
           currentUser.id,
         )!;
       if (
+        !user ||
         typeof b.current_password !== "string" ||
         b.current_password.length > 1024 ||
         !(await verifyPassword(b.current_password, user.password_hash))
@@ -834,6 +842,12 @@ async function handleRequest(
       const passwordHash = await hashPassword(b.password);
       const token = sessionToken(req);
       db.transaction(() => {
+        if (
+          userFrom(req)?.id !== currentUser.id ||
+          one("SELECT password_hash FROM users WHERE id=?", currentUser.id)
+            ?.password_hash !== user.password_hash
+        )
+          throw new RequestError("Credentials changed. Sign in again", 401);
         run(
           "UPDATE users SET password_hash=? WHERE id=?",
           passwordHash,
@@ -1001,6 +1015,8 @@ async function handleRequest(
       if (typeof b.password !== "string") return bad("Password is required");
       const passwordHash = await hashPassword(b.password);
       db.transaction(() => {
+        if (!userFrom(req)?.is_admin)
+          throw new RequestError("Please sign in again", 401);
         run(
           "UPDATE users SET password_hash=? WHERE id=?",
           passwordHash,
@@ -1426,8 +1442,12 @@ async function handleRequest(
     if (path === "/api/orders" && req.method === "POST") {
       const b = await body(req);
       const result = db.transaction(() => {
+        const orderId = one(
+          "UPDATE app_settings SET value=CAST(MAX(CAST(value AS INTEGER),(SELECT COALESCE(MAX(id),0) FROM orders))+1 AS TEXT) WHERE key='last_order_id' RETURNING CAST(value AS INTEGER) AS id",
+        )!.id;
         const result = run(
-          "INSERT INTO orders (customer,contact,notes,ship_by,is_draft) VALUES (?,?,?,?,1)",
+          "INSERT INTO orders (id,customer,contact,notes,ship_by,is_draft) VALUES (?,?,?,?,?,1)",
+          orderId,
           required(b.customer, "Customer"),
           optional(b.contact, 200),
           optional(b.notes),
@@ -1725,6 +1745,11 @@ async function handleRequest(
       const { productId, product, filamentId, filament } = itemProduct(b);
       const count = quantity(b.quantity, "Quantity", 1, 10000);
       db.transaction(() => {
+        if (writableOrder(orderId).currency !== settings().currency)
+          throw new RequestError(
+            "Cannot add catalogue products in a different currency. Create a new order in the current workspace currency",
+            409,
+          );
         run(
           "INSERT INTO order_items (order_id,product_id,product_name,filament_id,filament_name,color,quantity,unit_price,status) VALUES (?,?,?,?,?,?,?,?,?)",
           orderId,
@@ -1795,6 +1820,14 @@ async function handleRequest(
               : null;
         const sameProduct = productId === existing.product_id;
         const sameFilament = filamentId === existing.filament_id;
+        if (
+          (!sameProduct || !sameFilament) &&
+          order.currency !== settings().currency
+        )
+          throw new RequestError(
+            "Cannot replace products or filaments in a different currency. Create a new order in the current workspace currency",
+            409,
+          );
         let product = sameProduct ? existing : itemProduct(b).product;
         let filament =
           sameProduct && sameFilament

@@ -159,4 +159,15 @@ export function migrateProduction(db: Database) {
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES(4)",
       ).run();
     })();
+  if (!db.query("SELECT version FROM schema_migrations WHERE version=5").get())
+    db.transaction(() => {
+      // Deleted drafts still have activity; never assign their numbers again.
+      db.exec(`INSERT INTO app_settings(key,value)
+        SELECT 'last_order_id', CAST(MAX(id) AS TEXT) FROM (
+          SELECT COALESCE(MAX(id),0) AS id FROM orders
+          UNION ALL SELECT COALESCE(MAX(order_id),0) FROM activity_events
+          UNION ALL SELECT COALESCE(MAX(order_id_snapshot),0) FROM print_jobs
+        );`);
+      db.query("INSERT INTO schema_migrations(version) VALUES(5)").run();
+    })();
 }

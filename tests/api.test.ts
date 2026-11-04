@@ -1145,3 +1145,107 @@ test("item deletion rejects missing and stale versions without removing newer wo
   order = (await bootstrap()).orders.find((o: any) => o.id === id);
   expect(order.items).toHaveLength(0);
 });
+
+test("deleted draft numbers and activity are not reused, including after restart", async () => {
+  const deleted = await api("/orders", "POST", {
+    customer: "Deleted audit customer",
+  });
+  await api(`/orders/${deleted.id}`, "DELETE");
+  const created = await api("/orders", "POST", {
+    customer: "New audit customer",
+  });
+  expect(created.id).toBeGreaterThan(deleted.id);
+  const events = await api(`/orders/${created.id}/activity`);
+  expect(events.map((event: any) => event.detail)).toEqual([
+    "Created draft for New audit customer.",
+  ]);
+  await api(`/orders/${created.id}`, "DELETE");
+  child.kill();
+  await child.exited;
+  child = Bun.spawn([process.execPath, "run", resolve("server/index.ts")], {
+    env: { ...process.env, DATA_DIR: dir, PORT: String(port) },
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  for (let i = 0; i < 100; i++) {
+    try {
+      await bootstrap();
+      break;
+    } catch {
+      await Bun.sleep(30);
+    }
+  }
+  const afterRestart = await api("/orders", "POST", {
+    customer: "After restart",
+  });
+  expect(afterRestart.id).toBeGreaterThan(created.id);
+});
+
+test("old-currency orders reject new catalogue prices but allow snapshot corrections", async () => {
+  const order = await freshOrder(2);
+  await api("/products", "POST", {
+    name: "Replacement",
+    price: 20,
+    filament_ids: [1],
+  });
+  const replacement = (await bootstrap()).products.find(
+    (p: any) => p.name === "Replacement",
+  );
+  await api("/settings", "PUT", { currency: "USD", show_money: true });
+  try {
+    const before = (await bootstrap()).orders.find(
+      (o: any) => o.id === order.id,
+    );
+    expect(
+      (
+        await request(`/orders/${order.id}/items`, "POST", {
+          product_id: 1,
+          filament_id: 1,
+          quantity: 1,
+        })
+      ).status,
+    ).toBe(409);
+    const item = before.items[0];
+    for (const changes of [
+      { product_id: replacement.id },
+      { filament_id: null },
+    ]) {
+      expect(
+        (
+          await request(`/items/${item.id}`, "PUT", {
+            version: item.version,
+            quantity: 2,
+            printed_quantity: 0,
+            shipped_quantity: 0,
+            ...changes,
+          })
+        ).status,
+      ).toBe(409);
+    }
+    expect(
+      (await bootstrap()).orders.find((o: any) => o.id === order.id),
+    ).toEqual(before);
+    await api(`/items/${item.id}`, "PUT", {
+      version: item.version,
+      quantity: 3,
+      printed_quantity: 0,
+      shipped_quantity: 0,
+    });
+    const corrected = (await bootstrap()).orders.find(
+      (o: any) => o.id === order.id,
+    );
+    expect(corrected.currency).toBe("GBP");
+    expect(corrected.items[0].unit_price).toBe(item.unit_price);
+    expect(corrected.items[0].quantity).toBe(3);
+    const current = await api("/orders", "POST", { customer: "USD customer" });
+    await api(`/orders/${current.id}/items`, "POST", {
+      product_id: replacement.id,
+      quantity: 1,
+    });
+    expect(
+      (await bootstrap()).orders.find((o: any) => o.id === current.id).currency,
+    ).toBe("USD");
+  } finally {
+    await api("/settings", "PUT", { currency: "GBP", show_money: true });
+  }
+});
