@@ -1,0 +1,32 @@
+[
+ {
+  "shape": "app screen",
+  "theme": "Terrazzo",
+  "axes": "light/geometric-sans/warm",
+  "hero": "none (app screen)",
+  "nav": "kept shell, sidebar spec drawer with ruled sections, bottom tab bar on phones",
+  "footer": "none (app)",
+  "imagery": "none (app screen, no stand-in photos)",
+  "photos": [],
+  "entry": "printroom-ui-rebuild",
+  "fingerprint": "app-screen|spec-table|ticket-queue|ruled-ledger|mono-codes|ink-band",
+  "sections": [
+   "overview spec index",
+   "print queue tickets",
+   "orders spec table",
+   "order detail ledger",
+   "catalogue sample drawer",
+   "filaments stock table",
+   "team",
+   "settings",
+   "print history"
+  ],
+  "signature": "the print ticket, white ruled card with filament spine, active ticket as ink band",
+  "waived": [],
+  "prompt": "3D print studio hub managing catalogue filaments orders print queue",
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "app",
+  "date": "2026-11-05"
+ }
+]

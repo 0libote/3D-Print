@@ -2029,9 +2029,6 @@ function OrderDetail({
       </button>
       <div className="order-detail-heading">
         <div>
-          <span className="eyebrow">
-            {order.is_draft ? "DRAFT ORDER" : "CONFIRMED SALE"}
-          </span>
           <div className="detail-title-row">
             <h1>Order #{String(order.id).padStart(4, "0")}</h1>
             <OrderStatusBadge order={order} isActive={isActive} />
@@ -2040,8 +2037,8 @@ function OrderDetail({
             {order.is_draft
               ? "Add prints, then confirm this draft to start fulfillment."
               : isActive && activeItem && activePiece
-                ? `Now printing: ${activeItem.product_name} · piece ${activePiece.ordinal} of ${activeItem.quantity} · ${completed} of ${totalQuantity} pieces shipped`
-                : `Confirmed ${date(order.confirmed_at || order.created_at)} · ${completed} of ${totalQuantity} pieces shipped`}
+                ? `Now printing: ${activeItem.product_name}, piece ${activePiece.ordinal} of ${activeItem.quantity}, ${completed} of ${totalQuantity} pieces shipped`
+                : `Confirmed ${date(order.confirmed_at || order.created_at)}, ${completed} of ${totalQuantity} pieces shipped`}
           </p>
           <div className="detail-deadline">
             <Deadline order={order} />
@@ -2113,9 +2110,11 @@ function OrderDetail({
                         ? "Pieces ready to ship"
                         : "Individual pieces"}
                   </h2>
-                  <p>
-                    {counts.queued} queued · {counts.printing} now printing ·{" "}
-                    {counts.printed} ready to ship · {counts.shipped} shipped
+                  <p className="spec-meta-row">
+                    <span>{counts.queued} queued</span>
+                    <span>{counts.printing} now printing</span>
+                    <span>{counts.printed} ready to ship</span>
+                    <span>{counts.shipped} shipped</span>
                   </p>
                 </div>
               </div>
@@ -2170,8 +2169,8 @@ function OrderDetail({
                     <div className="detail-item-copy">
                       <strong>{item.product_name}</strong>
                       <small>
-                        {item.filament_name || "No filament selected"} ·{" "}
-                        {item.printed_quantity}/{item.quantity} printed ·{" "}
+                        {item.filament_name || "No filament selected"},{" "}
+                        {item.printed_quantity}/{item.quantity} printed,{" "}
                         {item.shipped_quantity}/{item.quantity} shipped
                       </small>
                     </div>
@@ -2261,7 +2260,6 @@ function OrderDetail({
         </div>
         <aside className="order-side-column">
           <section className="panel detail-info-panel">
-            <span className="eyebrow">CUSTOMER</span>
             <h2>{order.customer}</h2>
             <p>{order.contact || "No contact details added"}</p>
             <button type="button" className="text-button" onClick={onEdit}>
@@ -2269,7 +2267,7 @@ function OrderDetail({
             </button>
           </section>
           <section className="panel detail-info-panel">
-            <span className="eyebrow">ORDER SUMMARY</span>
+            <h2>Order summary</h2>
             <div className="summary-line">
               <span>Items</span>
               <strong>
@@ -2294,7 +2292,6 @@ function OrderDetail({
             )}
           </section>
           <section className="panel detail-info-panel">
-            <span className="eyebrow">FULFILLMENT</span>
             <h2>
               {order.is_draft
                 ? "Waiting for confirmation"
@@ -2550,14 +2547,14 @@ function NowPrintingBanner({
     >
       <span className="now-printing-pulse" aria-hidden="true" />
       <div className="now-printing-copy">
-        <span className="eyebrow">Now on the printer</span>
+        <span className="now-printing-label">Now on the printer</span>
         <strong>
-          {entry.item.product_name} · piece {entry.piece.ordinal} of{" "}
+          {entry.item.product_name}, piece {entry.piece.ordinal} of{" "}
           {entry.item.quantity}
         </strong>
         <small>
-          Order #{String(entry.order.id).padStart(4, "0")} ·{" "}
-          {entry.order.customer} · {entry.item.filament_name || "No filament"}
+          Order #{String(entry.order.id).padStart(4, "0")} for{" "}
+          {entry.order.customer} ({entry.item.filament_name || "No filament"})
         </small>
       </div>
       <button
