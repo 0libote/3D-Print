@@ -224,6 +224,8 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
   }
   .top-right {
     gap: var(--space-xs);

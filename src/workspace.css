@@ -112,6 +112,8 @@
   color: var(--subtle);
   margin-top: var(--space-2xs);
   line-height: 1.4;
+  overflow-wrap: break-word;
+  min-width: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -185,6 +187,8 @@
   color: var(--subtle);
   font-size: var(--text-sm);
   line-height: 1.4;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .recent-list > button > .status,
 .recent-list > button > .order-status-wrap {
@@ -624,6 +628,7 @@
   border: var(--rule-bar) solid var(--border-strong);
   overflow: hidden;
   box-shadow: var(--shadow-card);
+  min-width: 0;
 }
 .product-card {
   display: grid;
@@ -722,6 +727,7 @@
 }
 .filament-card {
   display: flex;
+  flex-wrap: wrap;
   padding: var(--space-md);
   align-items: center;
   gap: var(--space-sm);
@@ -770,6 +776,8 @@
   color: var(--muted);
   margin: 0;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .stock-count {
   display: grid;
@@ -853,6 +861,7 @@
 }
 .detail-heading-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-sm);
   align-items: stretch;
   width: 100%;
@@ -916,6 +925,9 @@
   gap: var(--space-md);
   min-width: 0;
 }
+.order-side-column > .panel {
+  min-width: 0;
+}
 .detail-item-card {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr) auto;
@@ -926,10 +938,9 @@
 }
 @media (min-width: 761px) {
   .detail-item-card {
-    grid-template-columns: 52px minmax(0, 1.4fr) minmax(
-        140px,
-        190px
-      ) auto auto auto;
+    grid-template-columns:
+      52px minmax(0, 1.4fr) minmax(140px, 190px)
+      auto auto auto;
     gap: var(--space-sm);
     padding: var(--space-md) var(--space-lg);
   }
@@ -1008,6 +1019,8 @@
   color: var(--muted);
   font-size: var(--text-md);
   line-height: 1.55;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .summary-line,
 .summary-total {
@@ -1159,11 +1172,15 @@
 }
 .team-row strong {
   font-size: var(--text-md);
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .team-row small {
   font-size: var(--text-sm);
   color: var(--muted);
   font-family: var(--font-outlier);
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .team-role {
   font-size: var(--text-sm);
@@ -1221,6 +1238,8 @@
 }
 .activity-row strong {
   font-size: var(--text-md);
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .activity-row p {
   margin: var(--space-2xs) 0 var(--space-2xs);
@@ -1244,7 +1263,7 @@
   margin: var(--space-md) 0 0;
   padding: 0;
 }
-@media (max-width: 400px) {
+@media (max-width: 560px) {
   .fulfillment-breakdown {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1305,6 +1324,11 @@
   font-weight: 500;
   cursor: pointer;
   min-height: var(--touch);
+  min-width: 0;
+}
+.choice span {
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .choice.selected {
   border: var(--rule-bar) solid var(--primary);
@@ -1389,11 +1413,16 @@
 }
 .spec-meta-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: var(--space-sm);
   border-top: var(--rule-hair) solid var(--border);
   padding-top: var(--space-xs);
   font-size: var(--text-sm);
+}
+.spec-meta-row > span {
+  flex: 1 1 120px;
+  min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .stat,

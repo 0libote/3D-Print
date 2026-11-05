@@ -63,7 +63,7 @@
   width: var(--space-xs);
   background: var(--ticket-color, var(--border-strong));
 }
-@media (min-width: 761px) {
+@media (min-width: 1024px) {
   .piece-row {
     grid-template-columns: 48px minmax(0, 1.4fr) minmax(180px, 1fr) minmax(
         192px,
@@ -84,7 +84,7 @@
   flex: none;
   grid-row: 1 / 3;
 }
-@media (min-width: 761px) {
+@media (min-width: 1024px) {
   .print-swatch {
     grid-row: auto;
   }
@@ -143,7 +143,7 @@
   min-width: 0;
   font-variant-numeric: tabular-nums;
 }
-@media (min-width: 761px) {
+@media (min-width: 1024px) {
   .print-order {
     grid-column: auto;
     flex-direction: column;
@@ -163,7 +163,7 @@
   align-items: center;
   grid-column: 1 / -1;
 }
-@media (min-width: 761px) {
+@media (min-width: 1024px) {
   .piece-actions {
     grid-column: auto;
     flex-direction: column;
@@ -173,12 +173,18 @@
     align-items: flex-end;
   }
 }
+@media (max-width: 760px) {
+  .piece-actions .text-button {
+    white-space: normal;
+    text-align: left;
+  }
+}
 .piece-actions .progress-button,
 .piece-actions .auth-submit,
 .piece-actions .outline-button {
   flex: 1 1 auto;
 }
-@media (min-width: 761px) {
+@media (min-width: 1024px) {
   .piece-actions .progress-button,
   .piece-actions .auth-submit,
   .piece-actions .outline-button {
@@ -356,6 +362,11 @@
   padding: var(--space-sm);
   background: var(--surface-soft);
   border-left: var(--space-2xs) solid var(--border-strong);
+  min-width: 0;
+}
+.material-plan strong {
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .job-history article {
   padding: var(--space-md) var(--space-md);
@@ -372,6 +383,7 @@
   }
   .job-history article > div {
     flex: 1;
+    min-width: 0;
   }
 }
 .job-history p,
@@ -411,6 +423,12 @@
   border: var(--rule-hair) solid var(--border);
   padding: var(--space-xs) var(--space-sm);
   cursor: pointer;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+.shipment-list p {
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 .production-fields {
   border: var(--rule-hair) solid var(--border-strong);
