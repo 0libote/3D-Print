@@ -616,23 +616,20 @@ textarea:focus-visible,
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: var(--ink);
-  opacity: 1;
+  background: rgb(0 0 0 / 0.55);
   display: flex;
   justify-content: center;
   align-items: flex-end;
-}
-.overlay::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--ink);
-  opacity: 0.55;
 }
 @media (min-width: 761px) {
   .overlay {
     align-items: center;
     padding: var(--space-lg);
+  }
+}
+@media (max-width: 760px) {
+  .overlay {
+    padding: 0;
   }
 }
 .modal-overlay {
@@ -653,6 +650,17 @@ textarea:focus-visible,
 @media (min-width: 761px) {
   .modal {
     padding: var(--space-xl) var(--space-xl);
+  }
+}
+@media (max-width: 760px) {
+  .modal {
+    width: 100%;
+    max-height: min(92dvh, 900px);
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    box-shadow: none;
+    padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px));
   }
 }
 .modal-top {

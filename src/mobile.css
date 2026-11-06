@@ -341,6 +341,7 @@
   min-height: 60px;
   padding: var(--space-sm) var(--space-md);
   border: var(--rule-hair) solid var(--border);
+  border-left: var(--space-2xs) solid transparent;
   background: var(--surface);
   color: var(--text);
   text-align: left;
@@ -359,7 +360,7 @@
 .mobile-menu-links button[aria-current="page"],
 .mobile-menu-links button:hover {
   border-color: var(--primary);
-  border-left: var(--space-2xs) solid var(--accent);
+  border-left-color: var(--accent);
 }
 .mobile-menu-signout {
   border-style: dashed !important;
