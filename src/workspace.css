@@ -491,8 +491,9 @@
   }
 }
 .orders-list .order-open {
-  min-height: 0;
-  padding: var(--space-3xs) 0;
+  min-height: var(--touch);
+  min-width: var(--touch);
+  padding: var(--space-2xs) var(--space-xs);
   font-size: var(--text-sm);
   font-family: var(--font-outlier);
   font-variant-numeric: tabular-nums;

@@ -776,7 +776,11 @@ test("stock deltas enforce both bounds without changing stock or history", async
     (await bootstrap()).filaments.find((f: any) => f.id === filament.id)
       .spool_count,
   ).toBe(100000);
-  expect(await api(`/filaments/${filament.id}/movements`)).toHaveLength(1);
+  const movements = await api(`/filaments/${filament.id}/movements`);
+  expect(movements.map((m: any) => m.detail)).toEqual([
+    "Spool adjustment",
+    "Initial stock",
+  ]);
 });
 
 test("validation rejects unsafe images, excessive prices and invalid cursors", async () => {
@@ -1052,53 +1056,24 @@ test("omitted numeric production details preserve existing product values", asyn
 });
 
 // NOTE: this test intentionally runs last in the file. It leaves the per-IP
-// login throttle bucket full, so any login-dependent test after it would get
-// 429 instead of a session. Keep it at the end.
+// login throttle bucket nearly full, so any login-dependent test after it
+// would get 429 instead of a session. Keep it at the end.
 test("successful login resets the failure throttle and excess attempts are limited", async () => {
-  for (let round = 0; round < 2; round++) {
-    for (let n = 0; n < 9; n++)
-      expect(
-        (
-          await request(
-            "/login",
-            "POST",
-            { username: "missing", password: "wrong" },
-            "",
-          )
-        ).status,
-      ).toBe(401);
-    expect(
-      (
-        await request(
-          "/login",
-          "POST",
-          { username: "owner", password: "password" },
-          "",
-        )
-      ).status,
-    ).toBe(200);
-  }
-  for (let n = 0; n < 10; n++)
-    expect(
-      (
-        await request(
-          "/login",
-          "POST",
-          { username: "missing", password: "wrong" },
-          "",
-        )
-      ).status,
-    ).toBe(401);
-  expect(
-    (
-      await request(
-        "/login",
-        "POST",
-        { username: "missing", password: "wrong" },
-        "",
-      )
-    ).status,
-  ).toBe(429);
+  const bad = (username: string) =>
+    request("/login", "POST", { username, password: "wrong" }, "");
+  const good = () =>
+    request("/login", "POST", { username: "owner", password: "password" }, "");
+  for (let n = 0; n < 9; n++) expect((await bad("probe-one")).status).toBe(401);
+  expect((await good()).status).toBe(200);
+  // The per-account budget survived the other account's success: one more
+  // failure fills it, and the next is limited while IP budget remains.
+  expect((await bad("probe-one")).status).toBe(401);
+  expect((await bad("probe-one")).status).toBe(429);
+  // A same-account success clears that account's budget again.
+  expect((await good()).status).toBe(200);
+  for (let n = 0; n < 9; n++) expect((await bad("owner")).status).toBe(401);
+  expect((await good()).status).toBe(200);
+  expect((await bad("owner")).status).toBe(401);
 });
 
 test("item deletion and addition preserve partial order progress", async () => {
@@ -1248,4 +1223,166 @@ test("old-currency orders reject new catalogue prices but allow snapshot correct
   } finally {
     await api("/settings", "PUT", { currency: "GBP", show_money: true });
   }
+});
+
+test("filament creation records an opening stock movement", async () => {
+  await api("/filaments", "POST", {
+    name: "Audit Blue",
+    color: "#0000ff",
+    material: "PLA",
+    spool_count: 3,
+    grams_per_spool: 500,
+  });
+  const created = (await bootstrap()).filaments.find(
+    (f: any) => f.name === "Audit Blue",
+  );
+  expect(created).toBeTruthy();
+  const movements = await api(`/filaments/${created.id}/movements`);
+  expect(movements.length).toBe(1);
+  expect(movements[0].spool_delta).toBe(3);
+  expect(movements[0].detail).toBe("Initial stock");
+});
+
+test("confirming a draft writes the confirmation activity", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Confirm audit" });
+  await api(`/orders/${id}/items`, "POST", { product_id: 1, quantity: 1 });
+  await api(`/orders/${id}/confirm`, "POST", {});
+  const history = await api(`/orders/${id}/activity`);
+  expect(history.some((e: any) => e.kind === "sale_confirmed")).toBe(true);
+});
+
+test("stale draft deletes are rejected but versioned deletes work", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Delete audit" });
+  const draft = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(
+    (await request(`/orders/${id}`, "DELETE", { version: draft.version + 1 }))
+      .status,
+  ).toBe(409);
+  expect((await request(`/orders/${id}`, "DELETE", {})).status).toBe(200);
+});
+
+test("catalogue writes reject archived and unknown filaments", async () => {
+  await api("/filaments", "POST", {
+    name: "Archivable",
+    color: "#00ff00",
+    material: "PLA",
+  });
+  const doomed = (await bootstrap()).filaments.find(
+    (f: any) => f.name === "Archivable",
+  );
+  await api(`/filaments/${doomed.id}`, "DELETE");
+  expect(
+    (
+      await request("/products", "POST", {
+        name: "Bad link",
+        price: 5,
+        filament_ids: [doomed.id],
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await request("/products", "POST", {
+        name: "Missing link",
+        price: 5,
+        filament_ids: [99999],
+      })
+    ).status,
+  ).toBe(404);
+});
+
+test("item edits with unknown catalogue references return 404", async () => {
+  const order = await freshOrder(1);
+  const item = order.items[0];
+  const payload = {
+    version: item.version,
+    quantity: 1,
+    printed_quantity: 0,
+    shipped_quantity: 0,
+  };
+  expect(
+    (
+      await request(`/items/${item.id}`, "PUT", {
+        ...payload,
+        product_id: 99999,
+      })
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await request(`/items/${item.id}`, "PUT", {
+        ...payload,
+        product_id: 1,
+        filament_id: 99999,
+      })
+    ).status,
+  ).toBe(404);
+});
+
+test("stale order detail writes are rejected", async () => {
+  const { id } = await api("/orders", "POST", { customer: "Version audit" });
+  const draft = (await bootstrap()).orders.find((o: any) => o.id === id);
+  expect(
+    (
+      await request(`/orders/${id}`, "PUT", {
+        version: draft.version + 1,
+        customer: "Stale write",
+      })
+    ).status,
+  ).toBe(409);
+  await api(`/orders/${id}`, "DELETE", {});
+});
+
+test("replaced product images are removed from uploads", async () => {
+  const { writeFileSync, existsSync } = await import("node:fs");
+  writeFileSync(
+    join(dir, "uploads", "stale-audit.png"),
+    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+  );
+  await api("/products", "POST", {
+    name: "Image audit",
+    price: 5,
+    image_url: "/uploads/stale-audit.png",
+  });
+  const product = (await bootstrap()).products.find(
+    (p: any) => p.name === "Image audit",
+  );
+  await api(`/products/${product.id}`, "PUT", {
+    version: product.version,
+    name: "Image audit",
+    price: 5,
+    image_url: "",
+  });
+  expect(existsSync(join(dir, "uploads", "stale-audit.png"))).toBe(false);
+});
+
+test("logout clears the device push subscription", async () => {
+  const key = (n: number) =>
+    Buffer.from(crypto.getRandomValues(new Uint8Array(n))).toString(
+      "base64url",
+    );
+  const endpoint = "https://fcm.googleapis.com/fcm/send/audit-device";
+  await api("/push-subscriptions", "POST", {
+    subscription: {
+      endpoint,
+      keys: { p256dh: key(65), auth: key(16) },
+    },
+  });
+  expect(
+    await api(
+      `/push-subscriptions/status?endpoint=${encodeURIComponent(endpoint)}`,
+    ),
+  ).toEqual({ subscribed: true });
+  await request("/logout", "POST", { endpoint });
+  const login = await request("/login", "POST", {
+    username: "owner",
+    password: "password",
+  });
+  expect(login.status).toBe(200);
+  cookie = login.headers.get("set-cookie")!.split(";")[0];
+  expect(
+    await api(
+      `/push-subscriptions/status?endpoint=${encodeURIComponent(endpoint)}`,
+    ),
+  ).toEqual({ subscribed: false });
 });

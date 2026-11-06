@@ -2,6 +2,7 @@ import { dueReminders } from "../shared/deadline-reminders";
 import { featureDefaults } from "../shared/features";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { join, extname, resolve } from "node:path";
 import webpush from "web-push";
 import { migrateProduction } from "./migrations";
@@ -173,6 +174,7 @@ migrateProduction(db);
 // Re-runnable indexes also upgrade existing databases without rewriting data.
 db.exec(`
 CREATE INDEX IF NOT EXISTS orders_recent_idx ON orders(archived,cancelled,id DESC);
+CREATE INDEX IF NOT EXISTS orders_counter_idx ON orders(archived,cancelled,is_draft,status);
 CREATE INDEX IF NOT EXISTS orders_list_idx ON orders(archived,cancelled,is_draft,status,id DESC);
 CREATE INDEX IF NOT EXISTS order_items_order_id_idx ON order_items(order_id,id);
 CREATE INDEX IF NOT EXISTS shipments_order_id_idx ON shipments(order_id,id DESC);
@@ -538,12 +540,21 @@ function quantity(value: unknown, label: string, min: number, max: number) {
 }
 function itemProduct(b: Row) {
   const productId = id(String(b.product_id));
+  const storedProduct = one(
+    "SELECT id,archived FROM products WHERE id=?",
+    productId,
+  );
+  if (!storedProduct) throw new RequestError("Product not found", 404);
+  if (storedProduct.archived)
+    throw new RequestError("This product is archived", 400);
   const product = one(
     "SELECT * FROM products WHERE id=? AND archived=0",
     productId,
   );
-  if (!product) throw new RequestError("Product not found");
+  if (!product) throw new RequestError("Product not found", 404);
   const filamentId = b.filament_id ? id(String(b.filament_id)) : null;
+  if (filamentId && !one("SELECT id FROM filaments WHERE id=?", filamentId))
+    throw new RequestError("Filament not found", 404);
   const filament = filamentId
     ? one(
         "SELECT f.* FROM filaments f JOIN product_filaments pf ON pf.filament_id=f.id WHERE pf.product_id=? AND f.id=? AND f.archived=0",
@@ -554,6 +565,32 @@ function itemProduct(b: Row) {
   if (filamentId && !filament)
     throw new RequestError("That filament is not offered for this product");
   return { productId, product, filamentId, filament };
+}
+function catalogueFilamentIds(b: Row) {
+  return Array.isArray(b.filament_ids)
+    ? b.filament_ids.map((value) => id(String(value)))
+    : [];
+}
+function assertCatalogueFilaments(b: Row) {
+  for (const filamentId of new Set(catalogueFilamentIds(b))) {
+    const filament = one(
+      "SELECT id,archived FROM filaments WHERE id=?",
+      filamentId,
+    );
+    if (!filament) throw new RequestError("Filament not found", 404);
+    if (filament.archived)
+      throw new RequestError("Remove archived filaments before saving", 409);
+  }
+}
+async function pruneUpload(previous: unknown, next: unknown) {
+  const oldPath = String(previous ?? ""),
+    newPath = String(next ?? "");
+  if (!oldPath.startsWith("/uploads/") || oldPath === newPath) return;
+  const name = oldPath.slice("/uploads/".length);
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) return;
+  try {
+    await unlink(join(uploadDir, name));
+  } catch {}
 }
 function checkDeadlineReminders() {
   let changed = false;
@@ -632,11 +669,19 @@ function liveResponse(request: Request) {
   });
 }
 const loginAttempts = new Map<string, number[]>();
+const accountAttempts = new Map<string, number[]>();
+// Verifying unknown logins against a real hash keeps their timing close to
+// real password checks, so usernames cannot be probed by response time.
+const dummyHash = await Bun.password.hash("printroom-dummy-sentinel");
 setInterval(() => {
   run("DELETE FROM sessions WHERE expires_at<=datetime('now')");
   for (const [key, value] of loginAttempts)
     if (!value.some((time) => time > Date.now() - 60_000))
       loginAttempts.delete(key);
+  for (const [key, value] of accountAttempts)
+    if (!value.some((time) => time > Date.now() - 60_000))
+      accountAttempts.delete(key);
+  if (accountAttempts.size > 2000) accountAttempts.clear();
 }, 60_000);
 async function handleRequest(
   req: Request,
@@ -655,8 +700,8 @@ async function handleRequest(
       ? path.slice(9)
       : path.slice(1);
     const file = resolve(root, relative || "index.html");
-    if (!file.startsWith(root + "/") && file !== root)
-      return bad("Not found", 404);
+    if (file === root) return bad("Not found", 404);
+    if (!file.startsWith(root + "/")) return bad("Not found", 404);
     if (path.startsWith("/uploads/") && !userFrom(req))
       return bad("Please sign in", 401);
     let selected = Bun.file(file);
@@ -779,11 +824,24 @@ async function handleRequest(
       const login = optional(b.username ?? b.email, 200);
       if (typeof b.password !== "string" || b.password.length > 1024)
         return bad("Invalid password");
+      const accountKey = `account:${login.toLowerCase()}`;
+      const nowAccount = Date.now();
+      const accountTries = (accountAttempts.get(accountKey) || []).filter(
+        (time) => time > nowAccount - 60_000,
+      );
+      accountAttempts.set(accountKey, accountTries);
+      if (accountTries.length >= 10)
+        return bad("Too many attempts. Try again in a minute", 429);
+      accountTries.push(nowAccount);
       const user = one(
         "SELECT * FROM users WHERE username=? COLLATE NOCASE OR email=? COLLATE NOCASE",
         login,
         login,
       );
+      if (!user)
+        await verifyPassword(String(b.password ?? ""), dummyHash).catch(
+          () => false,
+        );
       if (
         !user ||
         !(await verifyPassword(String(b.password ?? ""), user.password_hash))
@@ -802,6 +860,7 @@ async function handleRequest(
           user.id,
         );
       })();
+      accountAttempts.delete(`account:${login.toLowerCase()}`);
       loginAttempts.delete(server.requestIP?.(req)?.address || "local");
       return new Response(JSON.stringify({ ok: true }), {
         headers: {
@@ -812,7 +871,18 @@ async function handleRequest(
     }
     if (path === "/api/logout" && req.method === "POST") {
       const token = sessionToken(req);
-      if (token) run("DELETE FROM sessions WHERE token_hash=?", hash(token));
+      const b = await body(req).catch(() => ({}) as Row);
+      const endpoint = String(b.endpoint ?? "");
+      const logoutUser = userFrom(req);
+      db.transaction(() => {
+        if (token) run("DELETE FROM sessions WHERE token_hash=?", hash(token));
+        if (endpoint && logoutUser)
+          run(
+            "DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?",
+            endpoint,
+            logoutUser.id,
+          );
+      })();
       return new Response(JSON.stringify({ ok: true }), {
         headers: {
           "Content-Type": "application/json",
@@ -1198,9 +1268,10 @@ async function handleRequest(
       );
       const cost = positiveNumber(b.cost_per_kg ?? 0, "Cost per kg");
       db.transaction(() => {
+        const name = required(b.name, "Filament name");
         run(
           "INSERT INTO filaments (name,brand,material,color,notes,image_url,spool_count,grams_per_spool) VALUES (?,?,?,?,?,?,?,?)",
-          required(b.name, "Filament name"),
+          name,
           optional(b.brand, 100),
           required(b.material, "Material", 50),
           color,
@@ -1216,6 +1287,14 @@ async function handleRequest(
           cost,
           filamentId,
         );
+        run(
+          "INSERT INTO stock_movements(filament_id,actor_id,spool_delta,grams_delta,detail) VALUES(?,?,?,?,?)",
+          filamentId,
+          currentUser.id,
+          stock.count,
+          remaining,
+          "Initial stock",
+        );
       })();
       return json({ ok: true }, 201);
     }
@@ -1225,6 +1304,11 @@ async function handleRequest(
         color = String(b.color ?? "");
       if (!/^#[0-9a-fA-F]{6}$/.test(color)) return bad("Choose a valid colour");
       const stock = filamentStock(b);
+      const previous = one(
+        "SELECT image_url FROM filaments WHERE id=?",
+        id(filament[1]),
+      );
+      const nextImage = imageUrl(b.image_url);
       db.transaction(() => {
         const existing = expectVersion("filaments", id(filament[1]), b.version);
         const remaining = positiveNumber(
@@ -1237,23 +1321,19 @@ async function handleRequest(
           "Cost per kg",
         );
         updateVersion(
-          "UPDATE filaments SET name=?,brand=?,material=?,color=?,notes=?,image_url=?,spool_count=?,grams_per_spool=?,version=version+1 WHERE id=?",
+          "UPDATE filaments SET name=?,brand=?,material=?,color=?,notes=?,image_url=?,spool_count=?,grams_per_spool=?,remaining_grams=?,cost_per_kg=?,version=version+1 WHERE id=?",
           b.version,
           required(b.name, "Filament name"),
           optional(b.brand, 100),
           required(b.material, "Material", 50),
           color,
           optional(b.notes),
-          imageUrl(b.image_url),
+          nextImage,
           stock.count,
           stock.grams,
-          id(filament[1]),
-        );
-        run(
-          "UPDATE filaments SET remaining_grams=?,cost_per_kg=? WHERE id=?",
           remaining,
           cost,
-          existing.id,
+          id(filament[1]),
         );
         if (
           remaining !== existing.remaining_grams ||
@@ -1268,6 +1348,7 @@ async function handleRequest(
             "Manual stock correction",
           );
       })();
+      await pruneUpload(previous?.image_url, nextImage);
       return json({ ok: true });
     }
     const filamentStockPath = path.match(/^\/api\/filaments\/(\d+)\/stock$/);
@@ -1324,11 +1405,7 @@ async function handleRequest(
     if (path === "/api/products" && req.method === "POST") {
       const b = await body(req),
         price = positiveNumber(b.price ?? 0, "Price", 1_000_000)!;
-      const ids = Array.isArray(b.filament_ids)
-        ? b.filament_ids.map((value) => id(String(value)))
-        : [];
-      if (ids.some((fid) => !one("SELECT id FROM filaments WHERE id=?", fid)))
-        return bad("Filament not found", 404);
+      assertCatalogueFilaments(b);
       const details = productionDetails(b);
       const tx = db.transaction(() => {
         const result = run(
@@ -1347,7 +1424,7 @@ async function handleRequest(
           details.profile,
           result.lastInsertRowid,
         );
-        for (const filamentId of new Set(ids))
+        for (const filamentId of new Set(catalogueFilamentIds(b)))
           run(
             "INSERT INTO product_filaments VALUES (?,?)",
             result.lastInsertRowid,
@@ -1362,25 +1439,22 @@ async function handleRequest(
       const b = await body(req),
         price = positiveNumber(b.price ?? 0, "Price", 1_000_000)!,
         productId = id(product[1]);
-      const ids = Array.isArray(b.filament_ids)
-        ? b.filament_ids.map((value) => id(String(value)))
-        : [];
-      if (ids.some((fid) => !one("SELECT id FROM filaments WHERE id=?", fid)))
-        return bad("Filament not found", 404);
+      assertCatalogueFilaments(b);
       const details = productionDetails(b);
+      const nextImage = imageUrl(b.image_url);
+      const previous = one(
+        "SELECT image_url FROM products WHERE id=?",
+        productId,
+      );
       db.transaction(() => {
         expectVersion("products", productId, b.version);
         updateVersion(
-          "UPDATE products SET name=?,description=?,image_url=?,price=?,version=version+1 WHERE id=?",
+          "UPDATE products SET name=?,description=?,image_url=?,price=?,grams_per_piece=COALESCE(?,grams_per_piece),minutes_per_piece=COALESCE(?,minutes_per_piece),production_url=?,revision=?,print_profile=?,version=version+1 WHERE id=?",
           b.version,
           required(b.name, "Product name"),
           optional(b.description),
-          imageUrl(b.image_url),
+          nextImage,
           price,
-          productId,
-        );
-        run(
-          "UPDATE products SET grams_per_piece=COALESCE(?,grams_per_piece),minutes_per_piece=COALESCE(?,minutes_per_piece),production_url=?,revision=?,print_profile=? WHERE id=?",
           details.grams ?? null,
           details.minutes ?? null,
           details.url,
@@ -1389,13 +1463,14 @@ async function handleRequest(
           productId,
         );
         run("DELETE FROM product_filaments WHERE product_id=?", productId);
-        for (const filamentId of new Set(ids))
+        for (const filamentId of new Set(catalogueFilamentIds(b)))
           run(
             "INSERT INTO product_filaments VALUES (?,?)",
             productId,
             filamentId,
           );
       })();
+      await pruneUpload(previous?.image_url, nextImage);
       return json({ ok: true });
     }
     if (product && req.method === "DELETE") {
@@ -1689,13 +1764,13 @@ async function handleRequest(
             printed_quantity: 0,
             shipped_quantity: 0,
           } as any);
+        activity(
+          currentUser,
+          orderId,
+          "sale_confirmed",
+          "Confirmed the sale and added its items to the print queue.",
+        );
       })();
-      activity(
-        currentUser,
-        orderId,
-        "sale_confirmed",
-        "Confirmed the sale and added its items to the print queue.",
-      );
       notify(
         "sale_confirmed",
         "Sale confirmed",
@@ -1709,7 +1784,9 @@ async function handleRequest(
       const orderId = id(order[1]);
       if (!one("SELECT id FROM orders WHERE id=?", orderId))
         return bad("Order not found", 404);
+      const b = await body(req).catch(() => ({}) as Row);
       const existing = one("SELECT * FROM orders WHERE id=?", orderId)!;
+      if (b.version !== undefined) expectVersion("orders", orderId, b.version);
       if (!existing.is_draft)
         return bad(
           "Cancel or archive confirmed orders to preserve history",
@@ -1839,6 +1916,11 @@ async function handleRequest(
                   filamentId,
                 )
               : null;
+        if (
+          filamentId &&
+          !one("SELECT id FROM filaments WHERE id=?", filamentId)
+        )
+          return bad("Filament not found", 404);
         if (filamentId && !filament)
           return bad("That filament is not offered for this product");
         const count = quantity(b.quantity, "Quantity", 1, 10000);

@@ -24,8 +24,12 @@ self.addEventListener("install", (event) => {
         );
       } catch {}
       const urls = [...SHELL, ...assets];
+      // Core shell entries must all cache: a failed core install keeps the
+      // previous worker instead of promoting a half-cached shell. Hashed
+      // build assets are best-effort; missing ones fill in on first use.
+      await cache.addAll(SHELL);
       await Promise.allSettled(
-        urls.map(async (url) => {
+        assets.map(async (url) => {
           try {
             await cache.add(url);
           } catch {}

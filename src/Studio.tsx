@@ -115,13 +115,19 @@ export function JobHistory({
     ...older.filter((j) => !jobs.some((current) => current.id === j.id)),
   ];
   async function loadOlder() {
-    if (loading) return;
+    if (loading || done) return;
     setLoading(true);
     setError("");
     try {
       const rows: Job[] = await api(`/jobs?before=${visible.at(-1)?.id || ""}`);
-      setOlder((current) => [...current, ...rows]);
-      setDone(rows.length < 100);
+      setOlder((current) => {
+        const known = new Set([
+          ...jobs.map((j) => j.id),
+          ...current.map((j) => j.id),
+        ]);
+        return [...current, ...rows.filter((j) => !known.has(j.id))];
+      });
+      if (rows.length < 100) setDone(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load history");
     } finally {

@@ -258,6 +258,7 @@ function App() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const pendingRef = useRef(new Set<string>());
+  const swUpdateCleanup = useRef<(() => void) | null>(null);
   const refreshNeeded = useRef(false);
   const activeMutations = useRef(new Set<string>());
   const settledKeys = useRef(new Set<string>());
@@ -359,6 +360,7 @@ function App() {
   const signOut = () =>
     action(
       async () => {
+        let endpoint = "";
         try {
           if ("serviceWorker" in navigator) {
             const registration =
@@ -366,6 +368,7 @@ function App() {
             const subscription =
               await registration?.pushManager?.getSubscription();
             if (subscription) {
+              endpoint = subscription.endpoint;
               try {
                 await api("/push-subscriptions", "DELETE", {
                   endpoint: subscription.endpoint,
@@ -378,7 +381,7 @@ function App() {
         } catch (error) {
           console.warn("Push cleanup failed", error);
         }
-        await api("/logout", "POST");
+        await api("/logout", "POST", endpoint ? { endpoint } : {});
       },
       false,
       "session",
@@ -400,6 +403,23 @@ function App() {
                 setUpdateWorker(worker);
             });
           });
+          // Long-lived studio displays would otherwise go stale: check for
+          // a new worker when the tab regains focus and every 30 minutes.
+          const checkUpdate = () => {
+            void registration.update().catch(console.error);
+          };
+          const updateTimer = setInterval(checkUpdate, 30 * 60 * 1000);
+          const onVisibleUpdate = () => {
+            if (document.visibilityState === "visible") checkUpdate();
+          };
+          document.addEventListener("visibilitychange", onVisibleUpdate);
+          const onFocusUpdate = () => checkUpdate();
+          window.addEventListener("focus", onFocusUpdate);
+          swUpdateCleanup.current = () => {
+            clearInterval(updateTimer);
+            document.removeEventListener("visibilitychange", onVisibleUpdate);
+            window.removeEventListener("focus", onFocusUpdate);
+          };
         })
         .catch(console.error);
     const orderId = Number(new URLSearchParams(location.search).get("order"));
@@ -408,6 +428,7 @@ function App() {
       setSelectedOrder(orderId);
       history.replaceState(null, "", location.pathname);
     }
+    return () => swUpdateCleanup.current?.();
   }, []);
   useEffect(() => {
     if (!data?.user) {
@@ -438,6 +459,9 @@ function App() {
       update();
     };
     events.onerror = () => {
+      // Refresh once on the drop so a failed stream after a mutation does
+      // not leave the view stale until the next 30s poll tick.
+      if (connected) update();
       connected = false;
       setLive(false);
     };
@@ -1210,7 +1234,9 @@ function App() {
                     if (await confirm("Delete this order and all its items?"))
                       void action(
                         async () => {
-                          await api(`/orders/${chosen.id}`, "DELETE");
+                          await api(`/orders/${chosen.id}`, "DELETE", {
+                            version: chosen.version,
+                          });
                           setSelectedOrder((current) =>
                             current === chosen.id ? null : current,
                           );

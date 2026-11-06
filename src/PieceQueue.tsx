@@ -176,10 +176,7 @@ export function PieceQueue({
                     type="button"
                     className="progress-button"
                     disabled={
-                      rowPending ||
-                      !!pending.printer ||
-                      !!activePieceId ||
-                      rowPending
+                      rowPending || !!pending.printer || !!activePieceId
                     }
                     title={
                       activePieceId
