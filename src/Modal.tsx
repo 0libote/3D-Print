@@ -1,6 +1,35 @@
 import { createPortal } from "react-dom";
 import React, { useEffect, useRef, useId } from "react";
 
+// Count open modals so stacked dialogs (e.g. confirm over a form)
+// keep the background locked until the last one closes.
+let openCount = 0;
+
+function lockBackground() {
+  openCount += 1;
+  if (openCount !== 1) return () => {};
+  const root = document.documentElement;
+  const body = document.body;
+  const previous = {
+    rootOverflow: root.style.overflow,
+    bodyOverflow: body.style.overflow,
+    bodyPaddingRight: body.style.paddingRight,
+  };
+  // Compensate for the disappearing desktop scrollbar so the page
+  // behind doesn't shift sideways when the dialog opens.
+  const scrollbar = window.innerWidth - root.clientWidth;
+  root.style.overflow = "hidden";
+  body.style.overflow = "hidden";
+  if (scrollbar > 0) body.style.paddingRight = `${scrollbar}px`;
+  return () => {
+    openCount = Math.max(0, openCount - 1);
+    if (openCount !== 0) return;
+    root.style.overflow = previous.rootOverflow;
+    body.style.overflow = previous.bodyOverflow;
+    body.style.paddingRight = previous.bodyPaddingRight;
+  };
+}
+
 export function Modal({
   children,
   onClose,
@@ -27,25 +56,7 @@ export function Modal({
     if (previousDialog) previousDialog.inert = true;
     const heading = dialog.querySelector("h2");
     if (heading) heading.id = headingId;
-    const viewport = window.visualViewport;
-    const overlay = dialog.parentElement!;
-    const fitViewport = () => {
-      overlay.style.height = `${viewport?.height ?? window.innerHeight}px`;
-      overlay.style.top = `${viewport?.offsetTop ?? 0}px`;
-    };
-    fitViewport();
-    viewport?.addEventListener("resize", fitViewport);
-    viewport?.addEventListener("scroll", fitViewport);
-    window.addEventListener("resize", fitViewport);
-    const scrollY = window.scrollY;
-    const bodyStyle = {
-      position: document.body.style.position,
-      top: document.body.style.top,
-      width: document.body.style.width,
-    };
-    document.body.style.position = "fixed";
-    document.body.style.top = `-${scrollY}px`;
-    document.body.style.width = "100%";
+    const unlock = lockBackground();
     const main = document.querySelector("main"),
       sidebar = document.querySelector(".sidebar"),
       toast = document.querySelector(".toast"),
@@ -99,9 +110,6 @@ export function Modal({
     };
     document.addEventListener("keydown", handler);
     return () => {
-      viewport?.removeEventListener("resize", fitViewport);
-      viewport?.removeEventListener("scroll", fitViewport);
-      window.removeEventListener("resize", fitViewport);
       document.removeEventListener("keydown", handler);
       if (previousDialog) previousDialog.inert = false;
       if (main instanceof HTMLElement && !previousDialog) main.inert = false;
@@ -110,8 +118,7 @@ export function Modal({
       if (toast instanceof HTMLElement && !previousDialog) toast.inert = false;
       if (notice instanceof HTMLElement && !previousDialog)
         notice.inert = false;
-      Object.assign(document.body.style, bodyStyle);
-      window.scrollTo(0, scrollY);
+      unlock();
       previous?.focus({ preventScroll: true });
     };
   }, []);

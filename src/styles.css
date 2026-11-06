@@ -620,6 +620,14 @@ textarea:focus-visible,
   display: flex;
   justify-content: center;
   align-items: flex-end;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (min-width: 761px) {
+  .overlay {
+    align-items: center;
+    padding: var(--space-lg);
+  }
 }
 @media (min-width: 761px) {
   .overlay {
@@ -637,6 +645,7 @@ textarea:focus-visible,
 }
 .modal {
   position: relative;
+  flex: 0 0 auto;
   background: var(--surface);
   color: var(--text);
   width: min(620px, 100%);
@@ -649,12 +658,15 @@ textarea:focus-visible,
 }
 @media (min-width: 761px) {
   .modal {
+    margin: auto;
     padding: var(--space-xl) var(--space-xl);
   }
 }
 @media (max-width: 760px) {
   .modal {
     width: 100%;
+    margin: 0;
+    margin-top: auto;
     max-height: min(92dvh, 900px);
     border-left: 0;
     border-right: 0;
