@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { join, extname, resolve } from "node:path";
-import webpush from "web-push";
+import * as webpush from "web-push";
 import { migrateProduction } from "./migrations";
 import { production, RequestError } from "./production";
 import {
