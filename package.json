@@ -17,17 +17,17 @@
     "typecheck": "bun --bun tsc --noEmit"
   },
   "dependencies": {
-    "@astryxdesign/core": "^0.7.15",
-    "@astryxdesign/theme-stone": "^0.7.15",
+    "@astryxdesign/core": "^0.7.16",
+    "@astryxdesign/theme-stone": "^0.7.16",
     "@stylexjs/stylex": "^0.19.2",
-    "lucide-react": "^1.72.0",
+    "lucide-react": "^1.77.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "web-push": "^4.0.0"
   },
   "devDependencies": {
     "@stylexjs/unplugin": "^0.19.2",
-    "@types/bun": "^1.4.4",
+    "@types/bun": "^1.4.5",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@types/web-push": "^3.6.4",
